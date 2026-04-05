@@ -5,7 +5,7 @@ const AppContext = createContext();
 
 const LS = {
   get: (k, fb) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
-  set: (k, v)  => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
 export function AppProvider({ children }) {
@@ -18,7 +18,7 @@ export function AppProvider({ children }) {
   const [activeTab,     setActiveTab]     = useState('lessons');
   const [celebration,   setCelebration]   = useState(null);
 
-  // ── Auth ─────────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────
   const signup = useCallback((form) => {
     const users = LS.get('cl_users', []);
     if (users.find(u => u.email === form.email)) return { error: 'Email already registered' };
@@ -36,41 +36,38 @@ export function AppProvider({ children }) {
     const safe = { id: found.id, name: found.name, email: found.email, joinedAt: found.joinedAt };
     setUser(safe); LS.set('cl_user', safe);
     const today = new Date().toDateString();
-    const lastLogin = localStorage.getItem('cl_last_login');
-    if (lastLogin !== today) {
+    const last = localStorage.getItem('cl_last_login');
+    if (last !== today) {
       const yesterday = new Date(Date.now() - 86400000).toDateString();
-      const newStreak = lastLogin === yesterday ? streak + 1 : 1;
-      setStreak(newStreak); LS.set('cl_streak', newStreak);
+      const ns = last === yesterday ? streak + 1 : 1;
+      setStreak(ns); LS.set('cl_streak', ns);
       localStorage.setItem('cl_last_login', today);
     }
     return { success: true };
   }, [streak]);
 
-  const logout = useCallback(() => {
-    setUser(null); localStorage.removeItem('cl_user');
-  }, []);
+  const logout = useCallback(() => { setUser(null); localStorage.removeItem('cl_user'); }, []);
 
   // ── Lesson helpers ────────────────────────────────────────────────
-  const isLessonDone = useCallback((langId, level, lessonId) => {
-    return !!progress[`${langId}_${level}_${lessonId}`];
-  }, [progress]);
+  const isLessonDone = useCallback((langId, level, lessonId) =>
+    !!progress[`${langId}_${level}_${lessonId}`], [progress]);
 
-  const isLessonUnlocked = useCallback((langId, level, lessonIndex, lessons) => {
-    if (lessonIndex === 0) return true;
-    const prev = lessons[lessonIndex - 1];
+  const isLessonUnlocked = useCallback((langId, level, idx, lessons) => {
+    if (idx === 0) return true;
+    const prev = lessons[idx - 1];
     return !!progress[`${langId}_${level}_${prev.id}`];
   }, [progress]);
 
   const isLevelUnlocked = useCallback((langId, levelName) => {
-    const langLessons = LESSONS[langId];
-    if (!langLessons) return false;
+    const lang = LESSONS[langId];
+    if (!lang) return false;
     if (levelName === 'beginner') return true;
     if (levelName === 'intermediate') {
-      const beg = langLessons.beginner || [];
+      const beg = lang.beginner || [];
       return beg.length > 0 && beg.every(l => !!progress[`${langId}_beginner_${l.id}`]);
     }
     if (levelName === 'expert') {
-      const mid = langLessons.intermediate || [];
+      const mid = lang.intermediate || [];
       return mid.length > 0 && mid.every(l => !!progress[`${langId}_intermediate_${l.id}`]);
     }
     return false;
@@ -86,52 +83,48 @@ export function AppProvider({ children }) {
     const lang = LESSONS[langId];
     if (!lang) return { done: 0, total: 0, pct: 0 };
     const levels = ['beginner', 'intermediate', 'expert'];
-    const allLessons = levels.flatMap(lvl => lang[lvl] || []);
-    const done = levels.reduce((sum, lvl) => {
-      return sum + (lang[lvl] || []).filter(l => !!progress[`${langId}_${lvl}_${l.id}`]).length;
-    }, 0);
-    return { done, total: allLessons.length, pct: allLessons.length ? Math.round((done / allLessons.length) * 100) : 0 };
+    const all = levels.flatMap(lvl => lang[lvl] || []);
+    const done = levels.reduce((s, lvl) =>
+      s + (lang[lvl] || []).filter(l => !!progress[`${langId}_${lvl}_${l.id}`]).length, 0);
+    return { done, total: all.length, pct: all.length ? Math.round((done / all.length) * 100) : 0 };
   }, [progress]);
 
-  // ── Lesson completion + XP + badges ──────────────────────────────
+  // ── Complete lesson ───────────────────────────────────────────────
   const completeLesson = useCallback((lessonId, langId, level) => {
     const key = `${langId}_${level}_${lessonId}`;
     if (progress[key]) return;
-    const newProgress = { ...progress, [key]: true };
-    setProgress(newProgress); LS.set('cl_progress', newProgress);
-
-    const newXp = xp + 40;
-    setXp(newXp); LS.set('cl_xp', newXp);
+    const np = { ...progress, [key]: true };
+    setProgress(np); LS.set('cl_progress', np);
+    const nx = xp + 40;
+    setXp(nx); LS.set('cl_xp', nx);
 
     // badges
-    const newBadges = [...badges];
-    const addB = (b) => { if (!newBadges.includes(b)) newBadges.push(b); };
-    if (newXp >= 40)   addB('first_lesson');
-    if (newXp >= 200)  addB('rising_coder');
-    if (newXp >= 500)  addB('code_warrior');
-    if (newXp >= 1000) addB('legend');
-    const count = Object.keys(newProgress).length;
-    if (count >= 5)  addB('lesson_5');
-    if (count >= 15) addB('lesson_15');
-    if (newBadges.length !== badges.length) {
-      setBadges(newBadges); LS.set('cl_badges', newBadges);
-    }
+    const nb = [...badges];
+    const add = (b) => { if (!nb.includes(b)) nb.push(b); };
+    if (nx >= 40)   add('first_lesson');
+    if (nx >= 200)  add('rising_coder');
+    if (nx >= 500)  add('code_warrior');
+    if (nx >= 1000) add('legend');
+    const cnt = Object.keys(np).length;
+    if (cnt >= 5)  add('lesson_5');
+    if (cnt >= 15) add('lesson_15');
+    if (nb.length !== badges.length) { setBadges(nb); LS.set('cl_badges', nb); }
 
-    // check level / language completion
-    const langData  = LESSONS[langId];
-    const levelLessons = langData?.[level] || [];
-    const levelDone = levelLessons.every(l => !!newProgress[`${langId}_${level}_${l.id}`]);
-    if (levelDone) {
-      const allLevels = ['beginner','intermediate','expert'];
-      const langAllDone = allLevels.every(lvl => {
+    // celebrate level/lang completion
+    const langData = LESSONS[langId];
+    const lvlLessons = langData?.[level] || [];
+    const lvlDone = lvlLessons.every(l => !!np[`${langId}_${level}_${l.id}`]);
+    if (lvlDone) {
+      const allLvls = ['beginner','intermediate','expert'];
+      const langAllDone = allLvls.every(lvl => {
         const ls = langData?.[lvl] || [];
-        return ls.length === 0 || ls.every(l => !!newProgress[`${langId}_${lvl}_${l.id}`]);
+        return ls.length === 0 || ls.every(l => !!np[`${langId}_${lvl}_${l.id}`]);
       });
       if (langAllDone) {
-        setTimeout(() => setCelebration({ type: 'language_complete', langId }), 400);
+        setTimeout(() => setCelebration({ type:'language_complete', langId }), 500);
       } else {
-        const nextLevel = level === 'beginner' ? 'intermediate' : level === 'intermediate' ? 'expert' : null;
-        if (nextLevel) setTimeout(() => setCelebration({ type: 'level_complete', level, nextLevel, langId }), 400);
+        const next = level==='beginner'?'intermediate':level==='intermediate'?'expert':null;
+        if (next) setTimeout(() => setCelebration({ type:'level_complete', level, nextLevel:next, langId }), 500);
       }
     }
   }, [progress, xp, badges]);
@@ -140,17 +133,16 @@ export function AppProvider({ children }) {
 
   // ── Skill progress ────────────────────────────────────────────────
   const updateSkillProgress = useCallback((skillId, topicIndex) => {
-    const current = skillProgress[skillId] || { completed: [], xp: 0 };
-    if (current.completed.includes(topicIndex)) return;
-    const newSP = { ...skillProgress, [skillId]: { completed: [...current.completed, topicIndex], xp: current.xp + 20 } };
-    setSkillProgress(newSP); LS.set('cl_skill_progress', newSP);
-    const newXp = xp + 20;
-    setXp(newXp); LS.set('cl_xp', newXp);
+    const cur = skillProgress[skillId] || { completed:[], xp:0 };
+    if (cur.completed.includes(topicIndex)) return;
+    const ns = { ...skillProgress, [skillId]: { completed:[...cur.completed, topicIndex], xp: cur.xp+20 } };
+    setSkillProgress(ns); LS.set('cl_skill_progress', ns);
+    const nx = xp + 20; setXp(nx); LS.set('cl_xp', nx);
   }, [skillProgress, xp]);
 
-  const getCompletedSkillsCount = useCallback(() => {
-    return Object.keys(skillProgress).filter(sid => (skillProgress[sid]?.completed?.length ?? 0) >= 5).length;
-  }, [skillProgress]);
+  const getCompletedSkillsCount = useCallback(() =>
+    Object.keys(skillProgress).filter(sid => (skillProgress[sid]?.completed?.length ?? 0) >= 5).length,
+    [skillProgress]);
 
   const level     = Math.floor(xp / 200) + 1;
   const xpInLevel = xp % 200;

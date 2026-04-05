@@ -9,9 +9,5 @@ function Root() {
 }
 
 export default function App() {
-  return (
-    <AppProvider>
-      <Root />
-    </AppProvider>
-  );
+  return <AppProvider><Root /></AppProvider>;
 }

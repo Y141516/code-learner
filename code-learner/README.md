@@ -1,24 +1,39 @@
-# ⚡ Code Learner — Tab 1: Coding Lessons
+# ⚡ Code Learner — Tab 1 v2 (Improved)
 
-## What's Built
-**Tab 1 — Coding Lessons** is fully complete. Tabs 2–5 are present as placeholders.
+## What's New in This Version
+
+### Improvement 1 — Timestamps with Unique Content
+Each chapter timestamp now shows its own unique content:
+- Clear explanation text specific to that chapter
+- Bullet points with key takeaways
+- An optional code snippet where relevant
+
+### Improvement 2 — Code Panel Redesigned
+- Plain English explanation at the top
+- Each line of code shown with its own comment label above it
+- Terminal-style design preserved
+
+### Improvement 3 — Smart Challenge Types
+- **Code lessons** → Terminal input where user writes and runs code, output is verified
+- **Theory lessons** → MCQ or fill-in-the-blank depending on the content
+- Review mode lets users see all timestamps + code without losing their challenge progress
 
 ## Project Structure
 ```
 src/
-├── App.js                  # Root component
-├── index.js                # Entry point
-├── index.css               # Global styles + animations
-├── context/
-│   └── AppContext.js       # All state, localStorage persistence, XP, badges
+├── App.js
+├── index.js / index.css
+├── context/AppContext.js          — XP, badges, progress (localStorage)
 ├── data/
-│   └── lessons.js          # ALL lesson content (30 lessons per language)
+│   ├── lessons.js                 — Main export
+│   ├── lessonsData.js             — Python lessons
+│   └── lessonsData2.js            — JS, HTML&CSS, Fullstack
 ├── pages/
-│   ├── AuthPage.js         # Login + Signup page
-│   ├── MainLayout.js       # Sidebar + tab routing
-│   └── LessonsTab.js       # Full Tab 1 implementation
+│   ├── AuthPage.js
+│   ├── MainLayout.js              — Sidebar + tab routing
+│   └── LessonsTab.js             — Full Tab 1
 └── components/
-    └── CelebrationModal.js # Level/language completion animation
+    └── CelebrationModal.js
 ```
 
 ## How to Run
@@ -26,25 +41,10 @@ src/
 npm install
 npm start
 ```
-Open http://localhost:3000
+Open: http://localhost:3000
 
-## Features Implemented
-- ✅ Full login/signup with localStorage persistence
-- ✅ 4 languages: Python, JavaScript, HTML & CSS, Full Stack Web
-- ✅ 3 levels: Beginner → Intermediate → Expert (locked progression)
-- ✅ Sequential lessons (must finish lesson 1 before lesson 2)
-- ✅ Video-style lesson with chapter timestamps
-- ✅ Code example panel per lesson
-- ✅ Quiz with answer checking + explanation
-- ✅ "Try It Yourself" challenge with hint + review mode
-- ✅ 40 XP per completed lesson set
-- ✅ Level unlock celebration modal
-- ✅ Language complete celebration modal
-- ✅ XP bar, level, streak, badges in sidebar
-- ✅ Beautiful dark UI with animations
-
-## What's Next (Tabs 2–5)
-- Tab 2: Code Experiment (live editor + AI explain)
-- Tab 3: Skill Enhance
-- Tab 4: Quizzes
-- Tab 5: AI Update
+## Deploy to Vercel
+1. Push to GitHub
+2. Import on vercel.com
+3. Set Root Directory to `code-learner` if needed
+4. Deploy!
