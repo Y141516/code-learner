@@ -1,127 +1,201 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, {
+  useState, useRef, useEffect, useCallback, useMemo,
+} from 'react';
 import {
-  executeCode as executeRemote,
-  executeJSInBrowser,
-  executeHTML,
-  detectsInput,
-} from '../utils/judge0Executor';
+  executeCode, needsStdin,
+  isPyodideReady, isPyodideLoading,
+} from '../utils/executor';
 
-// ─── Language configs ─────────────────────────────────────
+// ─── Language configs ────────────────────────────────────
 const LANGS = [
-  { id:'python',     label:'Python',      icon:'🐍', color:'#4ec9b0', version:'3.10', file:'main.py'    },
-  { id:'javascript', label:'JavaScript',  icon:'⚡', color:'#DCDCAA', version:'18',   file:'index.js'   },
-  { id:'java',       label:'Java',        icon:'☕', color:'#CE9178', version:'17',   file:'Main.java'  },
-  { id:'html',       label:'HTML & CSS',  icon:'🎨', color:'#F28B54', version:'5',    file:'index.html' },
+  { id:'python',     label:'Python',     icon:'🐍', color:'#4EC9B0', ext:'py'   },
+  { id:'javascript', label:'JavaScript', icon:'⚡', color:'#DCDCAA', ext:'js'   },
+  { id:'java',       label:'Java',       icon:'☕', color:'#F0A868', ext:'java' },
+  { id:'html',       label:'HTML & CSS', icon:'🎨', color:'#E5A550', ext:'html' },
 ];
 
-// ─── Syntax keyword sets per language ────────────────────
-const KEYWORDS = {
-  python: ['False','None','True','and','as','assert','async','await','break','class',
-    'continue','def','del','elif','else','except','finally','for','from','global',
-    'if','import','in','is','lambda','nonlocal','not','or','pass','raise','return',
-    'try','while','with','yield','print','input','range','len','str','int','float',
-    'list','dict','set','tuple','type','bool','sum','min','max','sorted','reversed',
-    'enumerate','zip','map','filter','open','super','self'],
-  javascript: ['break','case','catch','class','const','continue','debugger','default',
-    'delete','do','else','export','extends','finally','for','function','if','import',
-    'in','instanceof','let','new','return','static','super','switch','this','throw',
-    'try','typeof','var','void','while','with','yield','async','await','of','from',
-    'console','Promise','Array','Object','Math','JSON','parseInt','parseFloat',
-    'undefined','null','true','false','NaN','Infinity'],
-  java: ['abstract','assert','boolean','break','byte','case','catch','char','class',
-    'continue','default','do','double','else','enum','extends','final','finally',
-    'float','for','if','implements','import','instanceof','int','interface','long',
-    'native','new','package','private','protected','public','return','short','static',
-    'super','switch','synchronized','this','throw','throws','transient','try','void',
-    'volatile','while','String','System','out','println','print','Scanner','Arrays',
-    'ArrayList','HashMap','true','false','null'],
-  html: ['<!DOCTYPE','html','head','body','title','meta','link','script','style',
-    'div','span','p','h1','h2','h3','h4','h5','h6','a','img','ul','ol','li',
-    'table','tr','td','th','form','input','button','textarea','select','option',
-    'header','footer','main','nav','section','article','aside','canvas','video',
-    'audio','source','iframe','br','hr','strong','em','i','b','u','pre','code',
-    'class','id','href','src','alt','type','name','value','placeholder','style',
-    'onclick','onchange','oninput','rel','charset','viewport','content',
-    'display','flex','grid','color','background','margin','padding','font',
-    'border','width','height','position','top','left','right','bottom'],
+// ─── Default starter code per language ──────────────────
+const DEFAULT_CODE = {
+  python: '',
+  javascript: '',
+  java: '',
+  html: '',
 };
 
-// ─── Autocomplete suggestions per language ────────────────
-const SNIPPETS = {
+// ─── Keywords for syntax highlighting ───────────────────
+const KW = {
+  python: new Set([
+    'False','None','True','and','as','assert','async','await','break','class',
+    'continue','def','del','elif','else','except','finally','for','from',
+    'global','if','import','in','is','lambda','nonlocal','not','or','pass',
+    'raise','return','try','while','with','yield',
+  ]),
+  javascript: new Set([
+    'async','await','break','case','catch','class','const','continue',
+    'debugger','default','delete','do','else','export','extends','finally',
+    'for','function','if','import','in','instanceof','let','new','of',
+    'return','static','super','switch','this','throw','try','typeof',
+    'var','void','while','with','yield','from',
+  ]),
+  java: new Set([
+    'abstract','assert','boolean','break','byte','case','catch','char','class',
+    'continue','default','do','double','else','enum','extends','final',
+    'finally','float','for','if','implements','import','instanceof','int',
+    'interface','long','native','new','package','private','protected',
+    'public','return','short','static','super','switch','synchronized',
+    'this','throw','throws','transient','try','void','volatile','while',
+  ]),
+  html: new Set([]),
+};
+
+const BUILTIN_PY = new Set([
+  'print','input','range','len','str','int','float','list','dict','set',
+  'tuple','type','bool','sum','min','max','abs','round','sorted','reversed',
+  'enumerate','zip','map','filter','open','super','self','hasattr','getattr',
+  'setattr','isinstance','issubclass','repr','vars','dir','id','hash',
+]);
+
+// ─── Autocomplete suggestions ────────────────────────────
+const COMPLETIONS = {
   python: [
-    { trigger:'def ',    insert:'def function_name(args):\n    pass', label:'def — function' },
-    { trigger:'class ',  insert:'class ClassName:\n    def __init__(self):\n        pass', label:'class' },
-    { trigger:'for ',    insert:'for i in range(10):\n    ', label:'for loop' },
-    { trigger:'while ',  insert:'while condition:\n    ', label:'while loop' },
-    { trigger:'if ',     insert:'if condition:\n    ', label:'if statement' },
-    { trigger:'import ', insert:'import ', label:'import module' },
-    { trigger:'print(',  insert:'print()', label:'print()' },
-    { trigger:'input(',  insert:'input("Enter value: ")', label:'input()' },
-    { trigger:'try:',    insert:'try:\n    \nexcept Exception as e:\n    print(e)', label:'try/except' },
-    { trigger:'with open(', insert:'with open("file.txt", "r") as f:\n    content = f.read()', label:'with open()' },
+    // Snippets
+    { label:'def function():',       kind:'snippet', detail:'function definition',
+      insert:'def ${1:name}(${2:args}):\n    ${3:pass}' },
+    { label:'class MyClass:',        kind:'snippet', detail:'class definition',
+      insert:'class ${1:Name}:\n    def __init__(self):\n        ${2:pass}' },
+    { label:'for i in range():',     kind:'snippet', detail:'for loop',
+      insert:'for ${1:i} in range(${2:10}):\n    ${3:pass}' },
+    { label:'for item in list:',     kind:'snippet', detail:'for-each',
+      insert:'for ${1:item} in ${2:collection}:\n    ${3:pass}' },
+    { label:'if condition:',         kind:'snippet', detail:'if statement',
+      insert:'if ${1:condition}:\n    ${2:pass}' },
+    { label:'if/else',              kind:'snippet', detail:'if-else',
+      insert:'if ${1:condition}:\n    ${2:pass}\nelse:\n    ${3:pass}' },
+    { label:'while loop',           kind:'snippet', detail:'while loop',
+      insert:'while ${1:condition}:\n    ${2:pass}' },
+    { label:'try/except',           kind:'snippet', detail:'exception handling',
+      insert:'try:\n    ${1:pass}\nexcept ${2:Exception} as e:\n    print(e)' },
+    { label:'import module',        kind:'snippet', detail:'import',
+      insert:'import ${1:module}' },
+    { label:'from x import y',      kind:'snippet', detail:'from import',
+      insert:'from ${1:module} import ${2:name}' },
+    { label:'with open()',          kind:'snippet', detail:'file open',
+      insert:'with open("${1:file.txt}", "${2:r}") as f:\n    ${3:content = f.read()}' },
+    { label:'list comprehension',   kind:'snippet', detail:'[x for x in y]',
+      insert:'[${1:x} for ${1:x} in ${2:iterable}]' },
+    { label:'lambda',               kind:'snippet', detail:'lambda function',
+      insert:'lambda ${1:x}: ${2:x}' },
+    { label:'print()',              kind:'function', detail:'builtin',    insert:'print(${1})' },
+    { label:'input()',              kind:'function', detail:'builtin',    insert:'input("${1:prompt}: ")' },
+    { label:'range()',              kind:'function', detail:'builtin',    insert:'range(${1:10})' },
+    { label:'len()',                kind:'function', detail:'builtin',    insert:'len(${1})' },
+    { label:'enumerate()',          kind:'function', detail:'builtin',    insert:'enumerate(${1:iterable})' },
+    { label:'zip()',                kind:'function', detail:'builtin',    insert:'zip(${1:a}, ${2:b})' },
+    // keywords
+    ...['False','None','True','and','as','assert','async','await','break',
+        'class','continue','def','del','elif','else','except','finally',
+        'for','from','global','if','import','in','is','lambda','nonlocal',
+        'not','or','pass','raise','return','try','while','with','yield',
+    ].map(k => ({ label:k, kind:'keyword', detail:'keyword', insert:k })),
   ],
   javascript: [
-    { trigger:'function ', insert:'function name(params) {\n  \n}', label:'function' },
-    { trigger:'const ',    insert:'const name = ', label:'const' },
-    { trigger:'let ',      insert:'let name = ', label:'let' },
-    { trigger:'for(',      insert:'for (let i = 0; i < arr.length; i++) {\n  \n}', label:'for loop' },
-    { trigger:'arr.map(',  insert:'arr.map(item => )', label:'Array.map()' },
-    { trigger:'arr.filter(', insert:'arr.filter(item => )', label:'Array.filter()' },
-    { trigger:'async ',    insert:'async function name() {\n  \n}', label:'async function' },
-    { trigger:'console.log(', insert:'console.log()', label:'console.log()' },
-    { trigger:'fetch(',    insert:'fetch(url)\n  .then(res => res.json())\n  .then(data => console.log(data))', label:'fetch()' },
-    { trigger:'class ',    insert:'class Name {\n  constructor() {\n    \n  }\n}', label:'class' },
+    { label:'const name = value',   kind:'snippet', detail:'constant',
+      insert:'const ${1:name} = ${2:value};' },
+    { label:'let name = value',     kind:'snippet', detail:'variable',
+      insert:'let ${1:name} = ${2:value};' },
+    { label:'function name() {}',   kind:'snippet', detail:'function',
+      insert:'function ${1:name}(${2:params}) {\n    ${3}\n}' },
+    { label:'arrow function',       kind:'snippet', detail:'() => {}',
+      insert:'const ${1:name} = (${2:params}) => {\n    ${3}\n};' },
+    { label:'async function',       kind:'snippet', detail:'async/await',
+      insert:'async function ${1:name}(${2:params}) {\n    ${3}\n}' },
+    { label:'if/else',              kind:'snippet', detail:'conditional',
+      insert:'if (${1:condition}) {\n    ${2}\n} else {\n    ${3}\n}' },
+    { label:'for loop',             kind:'snippet', detail:'classic for',
+      insert:'for (let ${1:i} = 0; ${1:i} < ${2:n}; ${1:i}++) {\n    ${3}\n}' },
+    { label:'for...of',             kind:'snippet', detail:'iterate array',
+      insert:'for (const ${1:item} of ${2:array}) {\n    ${3}\n}' },
+    { label:'try/catch',            kind:'snippet', detail:'error handling',
+      insert:'try {\n    ${1}\n} catch (${2:err}) {\n    console.error(${2:err});\n}' },
+    { label:'class',                kind:'snippet', detail:'ES6 class',
+      insert:'class ${1:Name} {\n    constructor(${2:params}) {\n        ${3}\n    }\n}' },
+    { label:'console.log()',        kind:'function', detail:'log output', insert:'console.log(${1});' },
+    { label:'fetch()',              kind:'function', detail:'HTTP request', insert:'fetch("${1:url}").then(r => r.json()).then(d => console.log(d));' },
+    { label:'Promise.all()',        kind:'function', detail:'parallel async', insert:'await Promise.all([${1}]);' },
+    { label:'Array.from()',         kind:'function', detail:'create array', insert:'Array.from({length: ${1:n}}, (_, i) => ${2:i});' },
+    { label:'.map()',               kind:'method',   detail:'transform array', insert:'.map(${1:item} => ${2:item})' },
+    { label:'.filter()',            kind:'method',   detail:'filter array', insert:'.filter(${1:item} => ${2:condition})' },
+    { label:'.reduce()',            kind:'method',   detail:'reduce array', insert:'.reduce((${1:acc}, ${2:cur}) => ${3:acc + cur}, ${4:0})' },
+    { label:'.find()',              kind:'method',   detail:'find first match', insert:'.find(${1:item} => ${2:condition})' },
+    ...['async','await','break','case','catch','class','const','continue',
+        'delete','do','else','export','extends','finally','for','function',
+        'if','import','in','instanceof','let','new','of','return','static',
+        'super','switch','this','throw','try','typeof','var','void','while',
+    ].map(k => ({ label:k, kind:'keyword', detail:'keyword', insert:k })),
   ],
   java: [
-    { trigger:'public class ', insert:'public class Main {\n    public static void main(String[] args) {\n        \n    }\n}', label:'class Main' },
-    { trigger:'System.out.', insert:'System.out.println()', label:'println()' },
-    { trigger:'for(',        insert:'for (int i = 0; i < n; i++) {\n    \n}', label:'for loop' },
-    { trigger:'Scanner ',    insert:'Scanner scanner = new Scanner(System.in);\nString input = scanner.nextLine();', label:'Scanner' },
-    { trigger:'ArrayList',   insert:'ArrayList<String> list = new ArrayList<>();', label:'ArrayList' },
-    { trigger:'if(',         insert:'if (condition) {\n    \n}', label:'if statement' },
-    { trigger:'try{',        insert:'try {\n    \n} catch (Exception e) {\n    System.out.println(e.getMessage());\n}', label:'try/catch' },
+    { label:'public class Main',    kind:'snippet', detail:'main class',
+      insert:'public class Main {\n    public static void main(String[] args) {\n        ${1}\n    }\n}' },
+    { label:'System.out.println()', kind:'snippet', detail:'print line',
+      insert:'System.out.println(${1});' },
+    { label:'System.out.printf()',  kind:'snippet', detail:'formatted print',
+      insert:'System.out.printf("${1:%s}%n", ${2:value});' },
+    { label:'for loop',             kind:'snippet', detail:'classic for',
+      insert:'for (int ${1:i} = 0; ${1:i} < ${2:n}; ${1:i}++) {\n    ${3}\n}' },
+    { label:'enhanced for',         kind:'snippet', detail:'for-each',
+      insert:'for (${1:String} ${2:item} : ${3:collection}) {\n    ${4}\n}' },
+    { label:'if/else',              kind:'snippet', detail:'conditional',
+      insert:'if (${1:condition}) {\n    ${2}\n} else {\n    ${3}\n}' },
+    { label:'try/catch',            kind:'snippet', detail:'exception',
+      insert:'try {\n    ${1}\n} catch (Exception ${2:e}) {\n    System.out.println(${2:e}.getMessage());\n}' },
+    { label:'Scanner',              kind:'snippet', detail:'read input',
+      insert:'Scanner scanner = new Scanner(System.in);\nString ${1:input} = scanner.nextLine();' },
+    { label:'ArrayList',            kind:'snippet', detail:'dynamic list',
+      insert:'ArrayList<${1:String}> ${2:list} = new ArrayList<>();' },
+    { label:'HashMap',              kind:'snippet', detail:'key-value map',
+      insert:'HashMap<${1:String}, ${2:Integer}> ${3:map} = new HashMap<>();' },
+    ...['abstract','boolean','break','byte','case','catch','char','class',
+        'continue','default','do','double','else','enum','extends','final',
+        'finally','float','for','if','implements','import','instanceof','int',
+        'interface','long','new','private','protected','public','return',
+        'short','static','super','switch','this','throw','throws','try',
+        'void','while',
+    ].map(k => ({ label:k, kind:'keyword', detail:'keyword', insert:k })),
   ],
   html: [
-    { trigger:'<!',     insert:'<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Title</title>\n</head>\n<body>\n  \n</body>\n</html>', label:'HTML boilerplate' },
-    { trigger:'<div',   insert:'<div class="">\n  \n</div>', label:'<div>' },
-    { trigger:'<p',     insert:'<p></p>', label:'<p>' },
-    { trigger:'<a ',    insert:'<a href="#"></a>', label:'<a href>' },
-    { trigger:'<img',   insert:'<img src="" alt="" />', label:'<img>' },
-    { trigger:'<input', insert:'<input type="text" placeholder="" />', label:'<input>' },
-    { trigger:'<button',insert:'<button onclick=""></button>', label:'<button>' },
-    { trigger:'<style', insert:'<style>\n  \n</style>', label:'<style>' },
-    { trigger:'<script',insert:'<script>\n  \n</script>', label:'<script>' },
+    { label:'HTML5 boilerplate',    kind:'snippet', detail:'full page',
+      insert:'<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>${1:Title}</title>\n  <style>\n    ${2}\n  </style>\n</head>\n<body>\n  ${3}\n  <script>\n    ${4}\n  </script>\n</body>\n</html>' },
+    { label:'<div class="">',       kind:'snippet', detail:'div element',   insert:'<div class="${1}">\n  ${2}\n</div>' },
+    { label:'<p>',                  kind:'snippet', detail:'paragraph',     insert:'<p>${1}</p>' },
+    { label:'<a href="">',          kind:'snippet', detail:'anchor link',   insert:'<a href="${1:#}">${2:link text}</a>' },
+    { label:'<img src="">',         kind:'snippet', detail:'image',         insert:'<img src="${1}" alt="${2}" />' },
+    { label:'<input type="">',      kind:'snippet', detail:'input field',   insert:'<input type="${1:text}" placeholder="${2}" />' },
+    { label:'<button>',             kind:'snippet', detail:'button',        insert:'<button onclick="${1}">${2:Click me}</button>' },
+    { label:'<ul><li>',            kind:'snippet', detail:'unordered list', insert:'<ul>\n  <li>${1}</li>\n  <li>${2}</li>\n</ul>' },
+    { label:'<style>',             kind:'snippet', detail:'CSS block',      insert:'<style>\n  ${1}\n</style>' },
+    { label:'<script>',            kind:'snippet', detail:'JS block',       insert:'<script>\n  ${1}\n</script>' },
+    { label:'flexbox container',   kind:'snippet', detail:'CSS flex',
+      insert:'display: flex;\njustify-content: ${1:center};\nalign-items: ${2:center};' },
+    { label:'grid container',      kind:'snippet', detail:'CSS grid',
+      insert:'display: grid;\ngrid-template-columns: ${1:repeat(3, 1fr)};\ngap: ${2:16px};' },
   ],
 };
 
-// ─── Syntax token colours ─────────────────────────────────
-const TOKEN_COLORS = {
-  keyword:  '#c586c0',
-  string:   '#ce9178',
-  comment:  '#6a9955',
-  number:   '#b5cea8',
-  function: '#dcdcaa',
-  builtin:  '#4ec9b0',
-  operator: '#d4d4d4',
-  default:  '#d4d4d4',
-};
-
-// ─── AI explain builder ───────────────────────────────────
-function buildAIResult(langId, code) {
-  const results = {
-    python: {
-      syntax: [
-        { token:'import module',   color:'#c586c0', desc:'Imports a Python module — gives access to all its functions. Standard library (random, math, os) needs no install. Third-party packages need pip install first.' },
-        { token:'f"Hello {var}"',  color:'#ce9178', desc:'f-string — embed any expression inside {}. Faster than concatenation, more readable than .format(). The recommended way to format strings in Python 3.6+.' },
-        { token:'def func(args):', color:'#dcdcaa', desc:'Defines a reusable function. Python uses indentation (4 spaces) for blocks. The function does nothing until called.' },
-        { token:'[x for x in ...]',color:'#4ec9b0', desc:'List comprehension — creates a list in one line. Equivalent to a for loop with .append(). More idiomatic and slightly faster.' },
-      ],
-      logic: 'The code follows Python\'s clean, readable style. Variables are created with simple assignment (no type declaration needed). Functions are defined with def and called by name. Python executes top-to-bottom, running each statement in order.',
-      pros: ['Readable, expressive Pythonic style','No type declarations needed — dynamic typing','Rich standard library — import and use','Indentation enforces clean code structure'],
-      cons: ['No type safety — bugs appear at runtime','Global variables can cause side effects','Mutable default arguments are a common trap','Recursive functions without memoization can be slow'],
-      improvements: 'Add type hints for better IDE support: def greet(name: str) -> str. Use if __name__ == "__main__": to make the file importable. Consider dataclasses for structured data instead of plain dicts.',
-      betterCode: `# Improved version with type hints, docstrings, and best practices
-from typing import List
+// ─── AI explanations ─────────────────────────────────────
+const AI_DATA = {
+  python: {
+    syntax:[
+      {token:'def func(args):',  color:'#DCDCAA', desc:'Defines a reusable function. Python uses indentation (4 spaces) for blocks, not curly braces. The function body runs only when called.'},
+      {token:'f"Hello {var}"',   color:'#CE9178', desc:'f-string (Python 3.6+) — embed any expression inside {}. Faster and cleaner than .format() or + concatenation.'},
+      {token:'import module',    color:'#C586C0', desc:'Imports a Python module. Standard library (random, math, os, json) needs no install. Third-party packages need pip install first.'},
+      {token:'[x for x in ...]', color:'#4EC9B0', desc:'List comprehension — builds a list in one line. Equivalent to a for loop with .append() but faster and more idiomatic.'},
+    ],
+    logic:'Python executes top-to-bottom. Variables are created on assignment — no type declaration needed. Functions are defined with def and called by name. Indentation defines code blocks.',
+    pros:['Clean, readable syntax — almost reads like English','No type declarations — dynamic typing speeds up prototyping','Vast standard library — import and go','Indentation enforces consistently clean code'],
+    cons:['Dynamic typing can hide bugs until runtime','Slower than compiled languages for heavy computation','GIL limits true multi-threading for CPU-bound tasks','No built-in type safety without mypy/type hints'],
+    improvements:'Add type hints: def greet(name: str) -> str. Use if __name__ == "__main__": guard. Consider dataclasses for structured data. Use pathlib instead of os.path for file operations.',
+    betterCode:`# Improved Python — type hints, docstrings, best practices
+from typing import List, Optional
 import sys
 
 def greet(name: str) -> str:
@@ -130,45 +204,42 @@ def greet(name: str) -> str:
         raise ValueError("Name cannot be empty")
     return f"Hello, {name.strip().title()}!"
 
-def process_numbers(nums: List[int]) -> dict:
-    """Compute statistics for a list of numbers."""
-    if not nums:
-        return {"error": "Empty list"}
+def compute_stats(numbers: List[float]) -> Optional[dict]:
+    """Compute basic statistics for a list of numbers."""
+    if not numbers:
+        return None
     return {
-        "count":   len(nums),
-        "sum":     sum(nums),
-        "average": round(sum(nums) / len(nums), 2),
-        "min":     min(nums),
-        "max":     max(nums),
-        "squares": [n ** 2 for n in nums],
+        "count":   len(numbers),
+        "sum":     sum(numbers),
+        "average": round(sum(numbers) / len(numbers), 2),
+        "min":     min(numbers),
+        "max":     max(numbers),
     }
 
 if __name__ == "__main__":
-    name = input("Enter your name: ") if sys.stdin.isatty() else "World"
-    print(greet(name))
-    
-    numbers = [1, 2, 3, 4, 5]
-    stats = process_numbers(numbers)
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
+    print(greet("world"))
+    stats = compute_stats([1, 2, 3, 4, 5])
+    if stats:
+        for key, val in stats.items():
+            print(f"  {key}: {val}")
 `,
-    },
-    javascript: {
-      syntax: [
-        { token:'const / let',     color:'#9cdcfe', desc:'const = immutable binding (use by default). let = rebindable. Both are block-scoped. Never use var — it\'s function-scoped and causes subtle bugs.' },
-        { token:'async/await',     color:'#c586c0', desc:'async functions always return a Promise. await pauses execution inside async functions without blocking the thread — ideal for API calls and I/O.' },
-        { token:'arr.map/filter',  color:'#4ec9b0', desc:'Functional array methods — they return new arrays, leaving the original unchanged. Chain them for clean data pipelines: arr.filter(...).map(...).reduce(...).' },
-        { token:'=> arrow func',   color:'#dcdcaa', desc:'Arrow functions are concise and don\'t have their own this binding. Single-expression bodies have implicit return: const double = n => n * 2.' },
-      ],
-      logic: 'JavaScript runs in a single thread using an event loop. Synchronous code runs line by line. Asynchronous code (fetch, timers) is scheduled and runs when the call stack is empty. async/await makes this flow readable.',
-      pros: ['Modern ES2023+ syntax is expressive','Array methods enable functional style','async/await simplifies async code','Runs natively in browsers — no install'],
-      cons: ['No type safety without TypeScript','null/undefined can cause runtime errors','this binding is confusing in callbacks','== vs === is a common source of bugs'],
-      improvements: 'Add error handling: try/catch around async calls. Use optional chaining: user?.name ?? "Guest". Consider TypeScript for large projects. Use Array.isArray() before array methods.',
-      betterCode: `// Improved: error handling, optional chaining, modern patterns
+  },
+  javascript: {
+    syntax:[
+      {token:'const / let',        color:'#9CDCFE', desc:'const = immutable binding (prefer by default). let = rebindable. Both are block-scoped unlike var. Never use var — it\'s function-scoped and causes hoisting bugs.'},
+      {token:'async / await',      color:'#C586C0', desc:'async functions return a Promise. await pauses execution inside async functions without blocking the thread — the foundation of modern JS I/O.'},
+      {token:'.map/.filter/.reduce',color:'#4EC9B0', desc:'Functional array methods that return new arrays, leaving originals unchanged. Chain them to build clean data transformation pipelines.'},
+      {token:'=> arrow function',   color:'#DCDCAA', desc:'Concise function syntax without its own this binding. Single-expression bodies have implicit return: const double = n => n * 2.'},
+    ],
+    logic:'JavaScript is single-threaded with an event loop. Synchronous code runs line by line. Async operations (fetch, timers) are scheduled and run when the call stack is clear. async/await makes this readable.',
+    pros:['Runs natively in every browser — zero install','async/await makes async code readable','Huge ecosystem — npm has packages for everything','Destructuring, spread, and optional chaining are powerful'],
+    cons:['No static typing without TypeScript','null/undefined both exist — source of bugs','== vs === confusion for newcomers','Callback-based APIs still common in older code'],
+    improvements:'Use TypeScript for large projects. Add optional chaining: user?.name ?? "Guest". Always add .catch() or try/catch to async functions. Prefer Array methods over for loops for readability.',
+    betterCode:`// Improved JavaScript — modern patterns, error handling
 const fetchUser = async (id) => {
   try {
     const res = await fetch(\`https://jsonplaceholder.typicode.com/users/\${id}\`);
-    if (!res.ok) throw new Error(\`HTTP \${res.status}\`);
+    if (!res.ok) throw new Error(\`HTTP \${res.status}: \${res.statusText}\`);
     return await res.json();
   } catch (err) {
     console.error(\`Failed to fetch user \${id}:\`, err.message);
@@ -176,62 +247,55 @@ const fetchUser = async (id) => {
   }
 };
 
-const processUsers = async () => {
-  const ids = [1, 2, 3];
-  
-  // Parallel fetching — much faster than sequential
-  const users = await Promise.allSettled(ids.map(fetchUser));
-  
-  users
-    .filter(r => r.status === 'fulfilled' && r.value)
-    .map(r => r.value)
-    .forEach(user => {
-      const city = user?.address?.city ?? 'Unknown city';
-      console.log(\`\${user.name} — \${user.email} — \${city}\`);
-    });
+const processNumbers = (nums) => {
+  if (!Array.isArray(nums) || nums.length === 0) return null;
+  return {
+    count:   nums.length,
+    sum:     nums.reduce((a, b) => a + b, 0),
+    average: +(nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(2),
+    min:     Math.min(...nums),
+    max:     Math.max(...nums),
+    evens:   nums.filter(n => n % 2 === 0),
+    squared: nums.map(n => n ** 2),
+  };
 };
 
-processUsers();
+const stats = processNumbers([1, 2, 3, 4, 5]);
+console.log(JSON.stringify(stats, null, 2));
 `,
-    },
-    java: {
-      syntax: [
-        { token:'public class Main',  color:'#4ec9b0', desc:'Java requires all code inside a class. public means accessible from anywhere. The class name must match the filename exactly.' },
-        { token:'static void main()', color:'#dcdcaa', desc:'The JVM entry point — must be exactly this signature. static means it runs without creating an object. String[] args receives command-line arguments.' },
-        { token:'System.out.println', color:'#c586c0', desc:'Standard output to the console. println adds a newline. print does not. printf allows C-style formatting: printf("%s is %d years old%n", name, age).' },
-        { token:'int[] / ArrayList',  color:'#ce9178', desc:'int[] is a fixed-size primitive array. ArrayList<Integer> is dynamic, resizable, and has useful methods like add(), remove(), contains(). Prefer ArrayList for flexibility.' },
-      ],
-      logic: 'Java is statically typed — every variable must declare its type. All code lives inside classes. The JVM compiles Java to bytecode, which runs on any platform. Strong type checking catches errors before runtime.',
-      pros: ['Static typing catches bugs at compile time','Excellent tooling and IDE support','Rich standard library (java.util, java.io)','Platform independent — runs anywhere with JVM'],
-      cons: ['Verbose compared to Python/JS','No operator overloading','Checked exceptions can be cumbersome','Slow startup time for small scripts'],
-      improvements: 'Use enhanced for loops: for (String item : list). Prefer ArrayList over arrays for flexibility. Use String.format() instead of concatenation. Add proper exception handling with specific exception types.',
-      betterCode: `import java.util.*;
+  },
+  java: {
+    syntax:[
+      {token:'public class Main',   color:'#4EC9B0', desc:'Java requires all code inside a class. public = accessible anywhere. The class name MUST match the filename exactly. Main class contains the entry point.'},
+      {token:'static void main()', color:'#DCDCAA', desc:'JVM entry point — must be exactly public static void main(String[] args). static = called without creating an object first.'},
+      {token:'System.out.println', color:'#C586C0', desc:'Prints to standard output. println adds a newline. print does not. printf("format", args) for C-style formatting.'},
+      {token:'ArrayList / Stream',  color:'#CE9178', desc:'ArrayList is a dynamic resizable array. Streams (Java 8+) enable functional-style data processing: filter, map, collect.'},
+    ],
+    logic:'Java is statically typed — every variable must declare its type. All code lives inside classes. The JVM compiles to bytecode at build time, catching type errors before runtime.',
+    pros:['Static typing — bugs caught at compile time','Excellent tooling (IntelliJ, Eclipse)','Rich standard library (java.util, java.io, java.net)','Platform-independent — "write once, run anywhere"'],
+    cons:['Verbose compared to Python/JS','Slow startup time for small scripts','Checked exceptions can be cumbersome','No first-class functions (use lambdas/FunctionalInterface)'],
+    improvements:'Use Java Streams for collection processing. Prefer ArrayList<> over arrays. Use String.format() or printf. Add specific exception types instead of catching Exception. Use var for local type inference (Java 10+).',
+    betterCode:`import java.util.*;
 import java.util.stream.*;
 
 public class Main {
+    // Record — clean data class (Java 16+)
     record Person(String name, int age) {}
-    
+
     public static void main(String[] args) {
-        // Modern Java — records, streams, var
         var people = List.of(
             new Person("Alice", 25),
             new Person("Bob", 17),
-            new Person("Carol", 32),
-            new Person("Dave", 15)
+            new Person("Carol", 32)
         );
-        
-        // Stream API — filter, sort, collect
-        var adults = people.stream()
+
+        // Stream API — functional style
+        System.out.println("Adults:");
+        people.stream()
             .filter(p -> p.age() >= 18)
             .sorted(Comparator.comparing(Person::name))
-            .collect(Collectors.toList());
-        
-        System.out.println("Adults:");
-        adults.forEach(p -> 
-            System.out.printf("  %s — age %d%n", p.name(), p.age())
-        );
-        
-        // Statistics
+            .forEach(p -> System.out.printf("  %s (age %d)%n", p.name(), p.age()));
+
         var stats = people.stream()
             .mapToInt(Person::age)
             .summaryStatistics();
@@ -239,24 +303,24 @@ public class Main {
     }
 }
 `,
-    },
-    html: {
-      syntax: [
-        { token:'box-sizing: border-box', color:'#ce9178', desc:'Makes width/height include padding and border — prevents elements from growing beyond declared size. Add * { box-sizing: border-box } as a global reset.' },
-        { token:'display: flex / grid',   color:'#4ec9b0', desc:'Flexbox = one-dimensional layout (row OR column). CSS Grid = two-dimensional (rows AND columns). Use flex for components, grid for page layouts.' },
-        { token:'CSS custom properties',  color:'#c586c0', desc:':root { --primary: #6366f1 } defines a global variable. Use with var(--primary). Change once and it updates everywhere — essential for theming.' },
-        { token:'addEventListener()',     color:'#dcdcaa', desc:'The modern way to handle events — cleaner than inline onclick="". Attach multiple listeners, easily remove them, and keep HTML/JS separate.' },
-      ],
-      logic: 'HTML defines structure, CSS controls appearance, JS adds behaviour. The browser parses HTML into a DOM tree, applies CSS rules (specificity determines which rule wins), then executes JS which can modify both.',
-      pros: ['Works in every browser — no install','CSS modern features are very powerful','Fast iteration — just refresh the page','Semantic HTML improves SEO and accessibility'],
-      cons: ['No scoped styles without CSS modules','Inline event handlers mix concerns','No built-in state management','CSS specificity conflicts are hard to debug'],
-      improvements: 'Use CSS custom properties for all colours and spacing. Replace onclick attributes with addEventListener. Add ARIA attributes for accessibility. Use <button> not <div> for clickable elements.',
-      betterCode: `<!DOCTYPE html>
+  },
+  html: {
+    syntax:[
+      {token:'box-sizing: border-box', color:'#CE9178', desc:'Makes width include padding and border — elements stay the declared size. Apply globally: * { box-sizing: border-box } as a reset.'},
+      {token:'display: flex / grid',   color:'#4EC9B0', desc:'Flexbox = 1D layout (row or column). CSS Grid = 2D layout (rows AND columns). Use flex for components, grid for page layouts.'},
+      {token:'CSS custom properties',  color:'#C586C0', desc:':root { --primary: #6366f1 } defines a global variable. Use with var(--primary). Change once and it updates everywhere — essential for theming.'},
+      {token:'addEventListener()',     color:'#DCDCAA', desc:'Modern event handling — separates JS from HTML. Attach multiple listeners, remove them easily. Always prefer over inline onclick="".'},
+    ],
+    logic:'HTML defines structure, CSS controls appearance, JS adds behaviour. The browser parses HTML into a DOM tree, applies CSS (specificity determines winner), then executes JS which can modify both.',
+    pros:['Works in every browser — no install or compilation','CSS is extremely powerful for layout and animation','Fast iteration — just refresh to see changes','Semantic HTML improves SEO and accessibility'],
+    cons:['No scoped styles without CSS Modules or Shadow DOM','Inline handlers mix structure and behaviour','CSS specificity conflicts are hard to debug','No built-in state management'],
+    improvements:'Use CSS custom properties for all colours. Replace onclick with addEventListener. Add ARIA attributes (aria-label, role) for accessibility. Use <button> not <div> for clickable elements.',
+    betterCode:`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Improved Page</title>
+  <title>Better Component</title>
   <style>
     :root {
       --primary: #6366f1;
@@ -264,352 +328,386 @@ public class Main {
       --bg: #0f172a;
       --text: #e2e8f0;
       --radius: 12px;
-      --gap: 16px;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 32px; }
-    .card { background: var(--surface); border-radius: var(--radius); padding: 24px; margin-top: var(--gap); }
-    .btn { background: var(--primary); color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 1rem; transition: opacity 0.2s; }
-    .btn:hover { opacity: 0.85; }
-    .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-    #count { font-size: 3rem; font-weight: 800; color: var(--primary); }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: grid; place-items: center; }
+    .card { background: var(--surface); padding: 32px; border-radius: var(--radius); text-align: center; min-width: 280px; }
+    h1 { color: var(--primary); font-size: 1.5rem; margin-bottom: 16px; }
+    .count { font-size: 4rem; font-weight: 800; color: var(--primary); margin: 16px 0; }
+    .actions { display: flex; gap: 10px; justify-content: center; }
+    button { background: var(--primary); color: #fff; border: none; padding: 10px 22px; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: opacity 0.2s; }
+    button:hover { opacity: 0.85; }
+    button.secondary { background: #475569; }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Better Component</h1>
-    <div class="card" aria-label="Counter widget">
-      <p id="count" aria-live="polite">0</p>
-      <button class="btn" id="incrementBtn" type="button">Count Up +1</button>
-      <button class="btn" id="resetBtn" type="button" style="margin-left:8px;background:#475569">Reset</button>
+  <div class="card">
+    <h1>Counter</h1>
+    <div class="count" id="count" aria-live="polite">0</div>
+    <div class="actions">
+      <button id="inc">+ Increment</button>
+      <button id="reset" class="secondary">Reset</button>
     </div>
-  </main>
+  </div>
   <script>
-    const countEl = document.getElementById('count');
-    let count = 0;
-    document.getElementById('incrementBtn').addEventListener('click', () => { countEl.textContent = ++count; });
-    document.getElementById('resetBtn').addEventListener('click', () => { count = 0; countEl.textContent = 0; });
+    let n = 0;
+    const el = document.getElementById('count');
+    document.getElementById('inc').addEventListener('click', () => el.textContent = ++n);
+    document.getElementById('reset').addEventListener('click', () => { n = 0; el.textContent = 0; });
   </script>
 </body>
 </html>
 `,
-    },
-  };
-  return results[langId] || results.python;
-}
+  },
+};
 
-/* ════════════════════════════════════════════════════════
-   SYNTAX HIGHLIGHTER — renders coloured tokens in a div
-   overlaid on the transparent textarea
-════════════════════════════════════════════════════════ */
-function highlight(code, langId) {
-  const kw = new Set(KEYWORDS[langId] || []);
-
-  // Split into tokens: strings, comments, numbers, words, operators
-  const parts = [];
+// ─── Tokenizer for syntax highlight ─────────────────────
+function tokenize(code, langId) {
+  const tokens = [];
   let i = 0;
+  const kw = KW[langId] || new Set();
+
   while (i < code.length) {
-    // Python/JS/Java single-line comment
+    // Single-line comments
     if ((langId !== 'html') && code[i] === '/' && code[i+1] === '/') {
-      const end = code.indexOf('\n', i);
-      const s = end === -1 ? code.slice(i) : code.slice(i, end);
-      parts.push({ type:'comment', val:s });
-      i += s.length; continue;
+      let s = ''; while (i < code.length && code[i] !== '\n') s += code[i++];
+      tokens.push({ type:'comment', val:s }); continue;
     }
-    // Python comment
     if (langId === 'python' && code[i] === '#') {
-      const end = code.indexOf('\n', i);
-      const s = end === -1 ? code.slice(i) : code.slice(i, end);
-      parts.push({ type:'comment', val:s });
-      i += s.length; continue;
+      let s = ''; while (i < code.length && code[i] !== '\n') s += code[i++];
+      tokens.push({ type:'comment', val:s }); continue;
     }
     // HTML comment
     if (langId === 'html' && code.startsWith('<!--', i)) {
-      const end = code.indexOf('-->', i);
-      const s = end === -1 ? code.slice(i) : code.slice(i, end + 3);
-      parts.push({ type:'comment', val:s });
-      i += s.length; continue;
+      const end = code.indexOf('-->', i); const s = end<0?code.slice(i):code.slice(i,end+3);
+      tokens.push({ type:'comment', val:s }); i+=s.length; continue;
     }
-    // Multi-line comment /* ... */
-    if (code[i] === '/' && code[i+1] === '*') {
-      const end = code.indexOf('*/', i+2);
-      const s = end === -1 ? code.slice(i) : code.slice(i, end+2);
-      parts.push({ type:'comment', val:s });
-      i += s.length; continue;
-    }
-    // Strings — double or single quote
-    if (code[i] === '"' || code[i] === "'") {
-      const q = code[i]; let s = q; i++;
-      while (i < code.length && code[i] !== q && code[i] !== '\n') {
-        if (code[i] === '\\') { s += code[i] + (code[i+1]||''); i+=2; continue; }
-        s += code[i++];
-      }
-      s += code[i] === q ? code[i++] : '';
-      parts.push({ type:'string', val:s }); continue;
+    // Block comment
+    if (code[i]==='/' && code[i+1]==='*') {
+      const end = code.indexOf('*/',i+2); const s=end<0?code.slice(i):code.slice(i,end+2);
+      tokens.push({ type:'comment', val:s }); i+=s.length; continue;
     }
     // Template literal
-    if (code[i] === '`') {
-      let s = '`'; i++;
-      while (i < code.length && code[i] !== '`') { s += code[i++]; }
-      s += '`'; i++;
-      parts.push({ type:'string', val:s }); continue;
+    if (code[i]==='`') {
+      let s='`'; i++;
+      while (i<code.length && code[i]!=='`') {
+        if (code[i]==='\\'){s+=code[i]+(code[i+1]||'');i+=2;continue;}
+        s+=code[i++];
+      }
+      s+=(code[i]==='`'?code[i++]:'');
+      tokens.push({type:'string',val:s}); continue;
+    }
+    // Strings
+    if (code[i]==='"'||code[i]==="'") {
+      const q=code[i]; let s=q; i++;
+      while (i<code.length && code[i]!==q && code[i]!=='\n') {
+        if(code[i]==='\\'){s+=code[i]+(code[i+1]||'');i+=2;continue;}
+        s+=code[i++];
+      }
+      s+=(code[i]===q?code[i++]:'');
+      tokens.push({type:'string',val:s}); continue;
     }
     // Numbers
-    if (/\d/.test(code[i]) && (i===0 || /\W/.test(code[i-1]))) {
-      let s = '';
-      while (i < code.length && /[\d._]/.test(code[i])) s += code[i++];
-      parts.push({ type:'number', val:s }); continue;
-    }
-    // Words (keywords / identifiers)
-    if (/[a-zA-Z_$]/.test(code[i])) {
-      let s = '';
-      while (i < code.length && /\w/.test(code[i])) s += code[i++];
-      const nextCh = code[i];
-      if (kw.has(s))           parts.push({ type:'keyword',  val:s });
-      else if (nextCh === '(') parts.push({ type:'function', val:s });
-      else                      parts.push({ type:'default',  val:s });
-      continue;
+    if (/\d/.test(code[i]) && (i===0||/\W/.test(code[i-1]))) {
+      let s=''; while(i<code.length && /[\d._xXa-fA-F]/.test(code[i])) s+=code[i++];
+      tokens.push({type:'number',val:s}); continue;
     }
     // HTML tags
-    if (langId === 'html' && code[i] === '<') {
-      let s = '<'; i++;
-      while (i < code.length && code[i] !== '>') s += code[i++];
-      s += '>'; i++;
-      parts.push({ type:'keyword', val:s }); continue;
+    if (langId==='html' && code[i]==='<') {
+      let s='<'; i++;
+      while(i<code.length && code[i]!=='>') s+=code[i++];
+      s+=code[i]==='>'?code[i++]:'';
+      tokens.push({type:'tag',val:s}); continue;
     }
-    // Everything else
-    parts.push({ type:'operator', val:code[i++] });
+    // Words
+    if (/[a-zA-Z_$]/.test(code[i])) {
+      let s=''; while(i<code.length && /[\w$]/.test(code[i])) s+=code[i++];
+      if (kw.has(s))                tokens.push({type:'keyword',val:s});
+      else if (BUILTIN_PY.has(s) && langId==='python') tokens.push({type:'builtin',val:s});
+      else if (code[i]==='(')       tokens.push({type:'function',val:s});
+      else                          tokens.push({type:'ident',val:s});
+      continue;
+    }
+    // Operators / punctuation
+    if (/[=!<>+\-*/%&|^~?:;,.]/.test(code[i])) {
+      tokens.push({type:'op',val:code[i++]}); continue;
+    }
+    tokens.push({type:'other',val:code[i++]});
   }
-
-  return parts.map((p, idx) => (
-    <span key={idx} style={{ color: TOKEN_COLORS[p.type] || TOKEN_COLORS.default }}>
-      {p.val}
-    </span>
-  ));
+  return tokens;
 }
 
-/* ════════════════════════════════════════════════════════
-   AUTOCOMPLETE — suggests keywords and snippets
-════════════════════════════════════════════════════════ */
-function getCompletions(langId, word, line) {
-  if (!word || word.length < 1) return [];
-  const kw  = KEYWORDS[langId]  || [];
-  const snips = SNIPPETS[langId] || [];
-  const wordLower = word.toLowerCase();
+const TC = {
+  keyword:'#C586C0', builtin:'#4EC9B0', string:'#CE9178', comment:'#6A9955',
+  number:'#B5CEA8',  function:'#DCDCAA', tag:'#4EC9B0', op:'#D4D4D4',
+  ident:'#9CDCFE',   other:'#D4D4D4',
+};
 
-  // Snippet matches (check full line ending)
-  const snipMatches = snips.filter(s => line.trimStart().toLowerCase().startsWith(s.trigger.toLowerCase()) || s.trigger.toLowerCase().startsWith(wordLower));
-
-  // Keyword matches
-  const kwMatches = kw
-    .filter(k => k.toLowerCase().startsWith(wordLower) && k !== word)
-    .slice(0, 6)
-    .map(k => ({ type:'keyword', label:k, insert:k }));
-
-  return [...snipMatches.slice(0,3).map(s => ({ type:'snippet', label:s.label, insert:s.insert })), ...kwMatches].slice(0, 8);
+function SyntaxHighlight({ code, langId }) {
+  const tokens = useMemo(() => tokenize(code || '', langId), [code, langId]);
+  return (
+    <>{tokens.map((t, i) => (
+      <span key={i} style={{ color: TC[t.type] || '#D4D4D4' }}>{t.val}</span>
+    ))}</>
+  );
 }
 
-/* ════════════════════════════════════════════════════════
-   INLINE TERMINAL INPUT
-   Manages a queue of input() prompts inline in the terminal
-════════════════════════════════════════════════════════ */
-function useInlineInput() {
-  const [inputLines, setInputLines] = useState([]); // completed stdin lines
-  const [pendingPrompt, setPendingPrompt] = useState(null); // current prompt
-  const [inputVal, setInputVal] = useState('');
-  const resolveRef = useRef(null);
+// ─── Main Component ──────────────────────────────────────
+export default function CodeExperimentTab() {
+  // Per-tab code storage
+  const [codes, setCodes] = useState({
+    python:'', javascript:'', java:'', html:'',
+  });
+  const [activeLang, setActiveLang] = useState('python');
 
-  const requestInput = useCallback((prompt) => {
-    return new Promise((resolve) => {
-      resolveRef.current = resolve;
-      setPendingPrompt(prompt || '');
-    });
+  // Execution state
+  const [status,   setStatus]   = useState('idle'); // idle|loading_py|running|done|error|html
+  const [output,   setOutput]   = useState('');
+  const [htmlOut,  setHtmlOut]  = useState('');
+  const [runMs,    setRunMs]    = useState(null);
+  const [pyReady,  setPyReady]  = useState(false);
+  const [pyLoading,setPyLoading]= useState(false);
+
+  // Editor state
+  const [splitPct, setSplitPct]  = useState(55); // % height for editor
+  const [stdinVal, setStdinVal]  = useState('');
+
+  // Autocomplete
+  const [suggestions, setSuggestions] = useState([]);
+  const [sugIdx,      setSugIdx]      = useState(0);
+  const [sugVisible,  setSugVisible]  = useState(false);
+  const [cursorPos,   setCursorPos]   = useState({ top:0, left:0 });
+
+  // AI
+  const [aiOpen,    setAiOpen]    = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiData,    setAiData]    = useState(null);
+  const [aiTab,     setAiTab]     = useState('explain');
+
+  const editorRef   = useRef(null);
+  const overlayRef  = useRef(null);
+  const termRef     = useRef(null);
+  const dragRef     = useRef(null);
+  const dragging    = useRef(false);
+  const containerRef= useRef(null);
+
+  const code = codes[activeLang] || '';
+  const lang = LANGS.find(l => l.id === activeLang);
+  const showStdin = needsStdin(activeLang, code);
+
+  // Poll pyodide readiness
+  useEffect(() => {
+    const id = setInterval(() => {
+      const r = isPyodideReady();
+      const l = isPyodideLoading();
+      setPyReady(r);
+      setPyLoading(l && !r);
+    }, 500);
+    return () => clearInterval(id);
   }, []);
 
-  const submitInput = useCallback(() => {
-    const val = inputVal;
-    setInputLines(l => [...l, { prompt: pendingPrompt, value: val }]);
-    setInputVal('');
-    setPendingPrompt(null);
-    if (resolveRef.current) { resolveRef.current(val); resolveRef.current = null; }
-  }, [inputVal, pendingPrompt]);
+  // Sync overlay scroll with textarea
+  const syncScroll = useCallback(() => {
+    if (overlayRef.current && editorRef.current) {
+      overlayRef.current.scrollTop  = editorRef.current.scrollTop;
+      overlayRef.current.scrollLeft = editorRef.current.scrollLeft;
+    }
+  }, []);
 
-  return { inputLines, pendingPrompt, inputVal, setInputVal, requestInput, submitInput };
-}
-
-/* ════════════════════════════════════════════════════════
-   MAIN COMPONENT
-════════════════════════════════════════════════════════ */
-export default function CodeExperimentTab() {
-  const [langId,      setLangId]      = useState('python');
-  const [code,        setCode]        = useState('');
-  const [output,      setOutput]      = useState('');      // text output lines
-  const [outputType,  setOutputType]  = useState('idle');  // idle|running|success|error|html
-  const [htmlOutput,  setHtmlOutput]  = useState('');
-  const [runTime,     setRunTime]     = useState(null);
-  const [aiOpen,      setAiOpen]      = useState(false);
-  const [aiLoading,   setAiLoading]   = useState(false);
-  const [aiResult,    setAiResult]    = useState(null);
-  const [aiTab,       setAiTab]       = useState('explain'); // explain | better
-  const [completions, setCompletions] = useState([]);
-  const [compIdx,     setCompIdx]     = useState(0);
-  const [showComp,    setShowComp]    = useState(false);
-  const [editorH,     setEditorH]     = useState(300);
-  const [stdinLines,  setStdinLines]  = useState(''); // pre-filled stdin
-
-  const textRef     = useRef(null);
-  const isDragging  = useRef(false);
-  const termBodyRef = useRef(null);
-  const inputRef    = useRef(null);
-
-  const lang = LANGS.find(l => l.id === langId) || LANGS[0];
-  const lines = code.split('\n').length;
-
-  // ── Switch language ──────────────────────────────────
-  const switchLang = (id) => {
-    setLangId(id);
-    setCode('');
-    setOutput(''); setOutputType('idle'); setHtmlOutput('');
-    setRunTime(null); setAiResult(null); setAiOpen(false);
-    setCompletions([]); setShowComp(false); setStdinLines('');
-  };
-
-  // scroll terminal to bottom on new output
+  // Scroll terminal to bottom
   useEffect(() => {
-    if (termBodyRef.current) termBodyRef.current.scrollTop = termBodyRef.current.scrollHeight;
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
   }, [output]);
 
-  // ── Run code ─────────────────────────────────────────
-  const runCode = useCallback(async () => {
-    if (outputType === 'running') return;
-    setOutputType('running');
-    setOutput('');
-    setHtmlOutput('');
-    setRunTime(null);
+  // ── Run code ────────────────────────────────────────────
+  const run = useCallback(async () => {
+    if (status === 'running' || status === 'loading_py') return;
+
+    if (activeLang === 'html') {
+      setHtmlOut(code); setOutput(''); setStatus('html'); setRunMs(0); return;
+    }
+
+    if (activeLang === 'python' && !isPyodideReady()) {
+      setStatus('loading_py');
+      setOutput('');
+    } else {
+      setStatus('running');
+      setOutput('');
+    }
+
+    setHtmlOut(''); setRunMs(null);
     const t0 = Date.now();
 
     try {
-      // HTML → iframe
-      if (langId === 'html') {
-        setHtmlOutput(code);
-        setOutputType('html');
-        setRunTime(Date.now() - t0);
-        return;
+      const result = await executeCode(activeLang, code, stdinVal);
+      const elapsed = Date.now() - t0;
+      setRunMs(elapsed);
+
+      if (result.html !== undefined) {
+        setHtmlOut(result.html); setOutput(''); setStatus('html'); return;
       }
 
-      // JavaScript — run in browser (instant, no API)
-      if (langId === 'javascript') {
-        const { output: out, error } = executeJSInBrowser(code);
-        setRunTime(Date.now() - t0);
-        if (error) { setOutput(`❌ ${error}\n\n${out}`); setOutputType('error'); }
-        else        { setOutput(out);                     setOutputType('success'); }
-        return;
-      }
-
-      // Python / Java → Judge0 API
-      const { output: out, error } = await executeRemote(langId, code, stdinLines);
-      setRunTime(Date.now() - t0);
-      if (error) {
-        setOutput((out ? out + '\n\n' : '') + `❌ ${error}`);
-        setOutputType('error');
-      } else {
-        setOutput(out || '(program exited with no output)');
-        setOutputType('success');
-      }
+      const { stdout='', stderr='', exitCode=0 } = result;
+      const combined = [stdout, stderr ? (stdout?'\n':'')+stderr : ''].join('').trim();
+      setOutput(combined || '(program exited with no output)');
+      setStatus(stderr || exitCode !== 0 ? 'error' : 'done');
     } catch (err) {
-      setRunTime(Date.now() - t0);
+      setRunMs(Date.now() - t0);
       setOutput(`❌ ${err.message}`);
-      setOutputType('error');
+      setStatus('error');
     }
-  }, [langId, code, stdinLines, outputType]);
+  }, [activeLang, code, stdinVal, status]);
 
-  // ── Editor keydown ────────────────────────────────────
-  const onKeyDown = (e) => {
-    // Run shortcut
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runCode(); return; }
-
-    // Navigate completions
-    if (showComp && completions.length > 0) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); setCompIdx(i => (i+1)%completions.length); return; }
-      if (e.key === 'ArrowUp')   { e.preventDefault(); setCompIdx(i => (i-1+completions.length)%completions.length); return; }
-      if (e.key === 'Tab' || e.key === 'Enter') {
-        e.preventDefault();
-        applyCompletion(completions[compIdx]);
-        return;
-      }
-      if (e.key === 'Escape') { setShowComp(false); return; }
-    }
-
-    // Tab = indent
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const el = textRef.current;
-      const s  = el.selectionStart;
-      const indent = langId === 'python' ? '    ' : '  ';
-      const nv = code.substring(0, s) + indent + code.substring(el.selectionEnd);
-      setCode(nv);
-      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = s + indent.length; });
-    }
-
-    // Auto-closing brackets
-    const pairs = { '(':')', '[':']', '{':'}', '"':'"', "'":"'" };
-    if (pairs[e.key] && e.key !== '"' && e.key !== "'") {
-      const el = textRef.current;
-      const s = el.selectionStart;
-      if (el.selectionStart !== el.selectionEnd) return;
-      e.preventDefault();
-      const nv = code.substring(0,s) + e.key + pairs[e.key] + code.substring(s);
-      setCode(nv);
-      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = s+1; });
-    }
-  };
-
-  // ── Autocomplete trigger on change ───────────────────
+  // ── Code change + autocomplete ──────────────────────────
   const onCodeChange = (e) => {
-    const val = e.target.value;
-    setCode(val);
+    const val  = e.target.value;
+    const lang = activeLang;
+    setCodes(prev => ({ ...prev, [lang]: val }));
+
     const pos = e.target.selectionStart;
-    const beforeCursor = val.slice(0, pos);
-    const currentLine  = beforeCursor.split('\n').at(-1) || '';
-    const wordMatch    = beforeCursor.match(/[\w.]+$/);
-    const word         = wordMatch ? wordMatch[0] : '';
+    const before = val.slice(0, pos);
+    const lineStart = before.lastIndexOf('\n') + 1;
+    const currentLine = before.slice(lineStart);
+    const wordMatch = before.match(/[\w.]+$/);
+    const word = wordMatch ? wordMatch[0].toLowerCase() : '';
 
     if (word.length >= 1) {
-      const comps = getCompletions(langId, word, currentLine);
-      if (comps.length > 0) { setCompletions(comps); setCompIdx(0); setShowComp(true); }
-      else setShowComp(false);
+      const all = COMPLETIONS[lang] || [];
+      const matches = all
+        .filter(c => c.label.toLowerCase().startsWith(word) && c.label.toLowerCase() !== word)
+        .slice(0, 10);
+
+      if (matches.length > 0) {
+        setSuggestions(matches);
+        setSugIdx(0);
+        setSugVisible(true);
+
+        // Calculate cursor pixel position
+        const ta = e.target;
+        const lineNum = (before.match(/\n/g)||[]).length;
+        const colNum  = before.length - before.lastIndexOf('\n') - 1;
+        setCursorPos({
+          top:  (lineNum + 1) * 18.5, // line-height
+          left: Math.min(colNum * 7.8, 400), // monospace char width approx
+        });
+      } else {
+        setSugVisible(false);
+      }
     } else {
-      setShowComp(false);
+      setSugVisible(false);
     }
   };
 
-  const applyCompletion = (comp) => {
-    const el  = textRef.current;
-    const pos = el.selectionStart;
-    const before = code.slice(0, pos);
+  // Apply a completion
+  const applyCompletion = useCallback((comp) => {
+    const ta  = editorRef.current;
+    if (!ta) return;
+    const pos = ta.selectionStart;
+    const val = codes[activeLang] || '';
+    const before = val.slice(0, pos);
     const wordMatch = before.match(/[\w.]+$/);
     const start = wordMatch ? pos - wordMatch[0].length : pos;
-    const nv = code.slice(0, start) + comp.insert + code.slice(pos);
-    setCode(nv);
-    setShowComp(false);
+    // Strip ${n:placeholder} syntax from insert
+    const insertText = comp.insert.replace(/\$\{\d+:?([^}]*)\}/g, '$1').replace(/\$\d+/g,'');
+    const newVal = val.slice(0, start) + insertText + val.slice(pos);
+    setCodes(prev => ({ ...prev, [activeLang]: newVal }));
+    setSugVisible(false);
     requestAnimationFrame(() => {
-      el.focus();
-      const newPos = start + comp.insert.length;
-      el.selectionStart = el.selectionEnd = newPos;
+      ta.focus();
+      const newPos = start + insertText.length;
+      ta.selectionStart = ta.selectionEnd = newPos;
     });
+  }, [codes, activeLang]);
+
+  // ── Keyboard handler ─────────────────────────────────────
+  const onKeyDown = (e) => {
+    // Suggestion navigation
+    if (sugVisible && suggestions.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSugIdx(i=>(i+1)%suggestions.length); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setSugIdx(i=>(i-1+suggestions.length)%suggestions.length); return; }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        // Only intercept Enter if suggestion visible; Tab always
+        if (e.key === 'Tab' || sugVisible) {
+          e.preventDefault();
+          applyCompletion(suggestions[sugIdx]);
+          return;
+        }
+      }
+      if (e.key === 'Escape') { setSugVisible(false); return; }
+    }
+
+    // Run shortcut
+    if ((e.ctrlKey||e.metaKey) && e.key==='Enter') { e.preventDefault(); run(); return; }
+
+    // Tab indent
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const ta  = editorRef.current;
+      const s   = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const indent = '    ';
+      const cur  = codes[activeLang]||'';
+      const nv   = cur.slice(0,s)+indent+cur.slice(end);
+      setCodes(prev=>({...prev,[activeLang]:nv}));
+      requestAnimationFrame(()=>{ta.selectionStart=ta.selectionEnd=s+indent.length;});
+      return;
+    }
+
+    // Auto-indent on Enter
+    if (e.key === 'Enter') {
+      const ta  = editorRef.current;
+      const pos = ta.selectionStart;
+      const cur = codes[activeLang]||'';
+      const before = cur.slice(0, pos);
+      const line = before.split('\n').at(-1)||'';
+      const indentMatch = line.match(/^(\s+)/);
+      const currentIndent = indentMatch ? indentMatch[1] : '';
+      const extraIndent = /[:({]$/.test(line.trim()) ? '    ' : '';
+      if (currentIndent || extraIndent) {
+        e.preventDefault();
+        const add = '\n' + currentIndent + extraIndent;
+        const nv = cur.slice(0,pos)+add+cur.slice(ta.selectionEnd);
+        setCodes(prev=>({...prev,[activeLang]:nv}));
+        requestAnimationFrame(()=>{
+          const np=pos+add.length;
+          ta.selectionStart=ta.selectionEnd=np;
+        });
+        return;
+      }
+    }
+
+    // Auto-close brackets/quotes
+    const AUTO_CLOSE = {'(':')',  '[':']', '{':'}' };
+    if (AUTO_CLOSE[e.key]) {
+      const ta = editorRef.current;
+      if (ta.selectionStart === ta.selectionEnd) {
+        e.preventDefault();
+        const cur=codes[activeLang]||'';
+        const pos=ta.selectionStart;
+        const nv=cur.slice(0,pos)+e.key+AUTO_CLOSE[e.key]+cur.slice(pos);
+        setCodes(prev=>({...prev,[activeLang]:nv}));
+        requestAnimationFrame(()=>{ta.selectionStart=ta.selectionEnd=pos+1;});
+        return;
+      }
+    }
   };
 
-  // ── Drag resize ───────────────────────────────────────
-  const onDividerDown = (e) => {
+  // ── Drag to resize split ─────────────────────────────────
+  const onDivMouseDown = (e) => {
     e.preventDefault();
-    isDragging.current = true;
-    const startY = e.clientY, startH = editorH;
+    dragging.current = true;
+    const container = containerRef.current;
+    const startY = e.clientY;
+    const startPct = splitPct;
+
     const onMove = (me) => {
-      if (!isDragging.current) return;
-      setEditorH(Math.max(120, Math.min(560, startH + (me.clientY - startY))));
+      if (!dragging.current) return;
+      const rect = container.getBoundingClientRect();
+      const pct = ((me.clientY - rect.top) / rect.height) * 100;
+      setSplitPct(Math.max(20, Math.min(80, pct)));
     };
     const onUp = () => {
-      isDragging.current = false;
+      dragging.current = false;
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -617,232 +715,294 @@ export default function CodeExperimentTab() {
     window.addEventListener('mouseup', onUp);
   };
 
-  // ── AI explain ────────────────────────────────────────
-  const explainCode = useCallback(async () => {
-    setAiOpen(true); setAiLoading(true); setAiResult(null); setAiTab('explain');
-    await new Promise(r => setTimeout(r, 1800));
-    setAiResult(buildAIResult(langId, code));
+  // ── AI explain ───────────────────────────────────────────
+  const openAI = useCallback(async () => {
+    setAiOpen(true); setAiLoading(true); setAiData(null); setAiTab('explain');
+    await new Promise(r=>setTimeout(r,1600));
+    setAiData(AI_DATA[activeLang] || AI_DATA.python);
     setAiLoading(false);
-  }, [langId, code]);
+  }, [activeLang]);
 
-  const clearOutput = () => { setOutput(''); setOutputType('idle'); setRunTime(null); setHtmlOutput(''); };
-  const outColor    = outputType==='error' ? '#f87171' : outputType==='success' ? '#4ec9b0' : '#94a3b8';
-  const needsStdin  = detectsInput(langId, code);
+  // ── Clear ────────────────────────────────────────────────
+  const clearOutput = () => { setOutput(''); setHtmlOut(''); setStatus('idle'); setRunMs(null); };
+
+  const lineCount = (code||'').split('\n').length;
+  const outColor  = status==='error' ? '#F87171' : status==='done' ? '#4EC9B0' : '#94A3B8';
+
+  // Status badge
+  const statusBadge = () => {
+    if (status==='loading_py') return <span style={badge('#f59e0b22','#f59e0b')}>⏳ Loading Python…</span>;
+    if (status==='running')    return <span style={badge('#60a5fa22','#60a5fa')}>● running</span>;
+    if (status==='done')       return <span style={badge('#4ec9b022','#4ec9b0')}>✓ exit 0</span>;
+    if (status==='error')      return <span style={badge('#f8717122','#f87171')}>✗ error</span>;
+    if (status==='html')       return <span style={badge('#818cf822','#818cf8')}>● preview</span>;
+    return null;
+  };
 
   return (
-    <div style={s.root}>
+    <div style={c.root}>
 
       {/* ══ TOP BAR ══════════════════════════════════════ */}
-      <div style={s.topBar}>
-        {/* Language tabs ONLY — no "Code Experiment" label */}
-        <div style={s.langTabs}>
+      <div style={c.topBar}>
+        {/* Language tabs — no label, just icons + names */}
+        <div style={c.tabs}>
           {LANGS.map(l => (
-            <button key={l.id} onClick={() => switchLang(l.id)}
-              style={{ ...s.langTab, ...(langId===l.id
-                ? { color:l.color, borderBottomColor:l.color, background:`${l.color}10` }
-                : {}) }}>
-              <span style={s.langIcon}>{l.icon}</span>
+            <button key={l.id}
+              onClick={() => { setActiveLang(l.id); setSugVisible(false); }}
+              style={{
+                ...c.tab,
+                ...(activeLang===l.id ? {
+                  color: l.color,
+                  borderBottom: `2px solid ${l.color}`,
+                  background: `${l.color}0e`,
+                } : {}),
+              }}>
+              <span style={c.tabIcon}>{l.icon}</span>
               <span>{l.label}</span>
             </button>
           ))}
         </div>
 
-        <div style={s.topRight}>
-          <span style={s.shortcutHint}>Ctrl+Enter to run</span>
-          <button onClick={explainCode} style={s.aiBtn}>🤖 AI Explain</button>
-          <button onClick={runCode} disabled={outputType==='running'}
-            style={{ ...s.runBtn, opacity: outputType==='running' ? 0.6 : 1 }}>
-            {outputType==='running'
-              ? <><span style={s.spinner}/>Running…</>
+        <div style={c.topRight}>
+          {activeLang==='python' && !pyReady && (
+            <span style={c.pyNote}>
+              {pyLoading ? '⏳ Loading Python runtime…' : '⚡ Python runs in browser'}
+            </span>
+          )}
+          <span style={c.kbHint}>Ctrl+Enter</span>
+          <button onClick={openAI} style={c.aiBtn}>🤖 AI Explain</button>
+          <button onClick={run}
+            disabled={status==='running'||status==='loading_py'}
+            style={{ ...c.runBtn, opacity:(status==='running'||status==='loading_py')?0.6:1 }}>
+            {status==='running'||status==='loading_py'
+              ? <><Spinner/> Running…</>
               : <>▶ Run</>}
           </button>
         </div>
       </div>
 
-      {/* ══ MAIN LAYOUT ══════════════════════════════════ */}
-      <div style={s.mainLayout}>
+      {/* ══ BODY: [left col] [AI panel] ══════════════════ */}
+      <div style={c.body}>
 
-        {/* ── LEFT: editor + terminal ── */}
-        <div style={s.leftCol}>
+        {/* ── LEFT COLUMN ── */}
+        <div ref={containerRef} style={c.leftCol}>
 
-          {/* EDITOR */}
-          <div style={s.editorWrap}>
-            <div style={s.editorBar}>
-              <Dots/>
-              <span style={s.filename}>{lang.file}</span>
-              <span style={s.langBadge}>{lang.icon} {lang.label}</span>
+          {/* ── EDITOR PANE ── */}
+          <div style={{ ...c.editorPane, height:`${splitPct}%` }}>
+            <div style={c.paneBar}>
+              <TrafficLights/>
+              <span style={c.barFilename}>{lang?.icon} {lang?.label} — {lang?.ext ? `main.${lang.ext}` : 'file'}</span>
+              <span style={c.barRight}>{lineCount} {lineCount===1?'line':'lines'}</span>
             </div>
-            <div style={{ position:'relative' }}>
-              {/* Syntax highlight overlay */}
-              <div style={{ ...s.highlight, height:editorH }}>
-                <div style={s.lineNums}>
-                  {Array.from({ length:lines }, (_,i) => (
-                    <div key={i} style={s.lineNum}>{i+1}</div>
-                  ))}
-                </div>
-                <div style={s.highlightCode}>
-                  <pre style={s.highlightPre}>
-                    {code ? highlight(code, langId) : <span style={{color:'#3c3c3c'}}>// Start coding here…</span>}
+
+            {/* Editor area */}
+            <div style={c.editorArea}>
+              {/* Line numbers */}
+              <div style={c.lineNums} ref={el => {
+                // sync line number scroll with textarea
+                if (el && editorRef.current) {
+                  editorRef.current.addEventListener('scroll', () => { if(el) el.scrollTop = editorRef.current.scrollTop; });
+                }
+              }}>
+                {Array.from({length:lineCount},(_,i)=>(
+                  <div key={i} style={c.lineNum}>{i+1}</div>
+                ))}
+              </div>
+
+              {/* Highlight layer + textarea wrapper */}
+              <div style={c.editorInner}>
+                {/* Syntax overlay */}
+                <div
+                  ref={overlayRef}
+                  aria-hidden
+                  style={c.overlay}
+                  onScroll={syncScroll}
+                >
+                  <pre style={c.overlayPre}>
+                    {code
+                      ? <SyntaxHighlight code={code} langId={activeLang}/>
+                      : <span style={{color:'#3c3c3c'}}>// Write your code here…</span>
+                    }
                     {'\n'}
                   </pre>
                 </div>
-              </div>
-              {/* Invisible textarea on top */}
-              <textarea
-                ref={textRef}
-                value={code}
-                onChange={onCodeChange}
-                onKeyDown={onKeyDown}
-                onClick={() => setShowComp(false)}
-                style={{ ...s.editor, height:editorH }}
-                spellCheck={false}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                placeholder=""
-              />
 
-              {/* Autocomplete dropdown */}
-              {showComp && completions.length > 0 && (
-                <div style={s.autocomplete}>
-                  {completions.map((c,i) => (
-                    <div key={i} onMouseDown={e=>{e.preventDefault();applyCompletion(c);setCompIdx(i);}}
-                      style={{ ...s.acItem, ...(i===compIdx ? s.acItemActive : {}) }}>
-                      <span style={{ ...s.acType, color: c.type==='snippet'?'#818cf8':'#4ec9b0' }}>
-                        {c.type==='snippet' ? '⬡' : '●'}
-                      </span>
-                      <span style={s.acLabel}>{c.label}</span>
-                      {c.type==='snippet' && <span style={s.acSnip}>snippet</span>}
+                {/* Transparent textarea */}
+                <textarea
+                  ref={editorRef}
+                  value={code}
+                  onChange={onCodeChange}
+                  onKeyDown={onKeyDown}
+                  onScroll={syncScroll}
+                  onBlur={() => setTimeout(()=>setSugVisible(false),120)}
+                  onClick={() => setSugVisible(false)}
+                  style={c.textarea}
+                  spellCheck={false}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  wrap="off"
+                />
+
+                {/* Autocomplete dropdown */}
+                {sugVisible && suggestions.length > 0 && (
+                  <div style={{ ...c.sugBox, top: cursorPos.top + 2, left: cursorPos.left }}>
+                    {suggestions.map((s,i) => (
+                      <div key={i}
+                        onMouseDown={e=>{e.preventDefault();applyCompletion(s);setSugIdx(i);}}
+                        style={{ ...c.sugItem, ...(i===sugIdx?c.sugItemActive:{}) }}>
+                        <span style={{ ...c.sugKind, color:
+                          s.kind==='snippet' ? '#818cf8' :
+                          s.kind==='function'? '#DCDCAA' :
+                          s.kind==='method'  ? '#4EC9B0' :
+                          s.kind==='keyword' ? '#C586C0' : '#858585' }}>
+                          {s.kind==='snippet'?'⬡':s.kind==='function'?'ƒ':s.kind==='method'?'m':s.kind==='keyword'?'K':'·'}
+                        </span>
+                        <span style={c.sugLabel}>{s.label}</span>
+                        <span style={c.sugDetail}>{s.detail}</span>
+                      </div>
+                    ))}
+                    <div style={c.sugFooter}>
+                      <span>↑↓ navigate</span><span>Tab/Enter to accept</span><span>Esc dismiss</span>
                     </div>
-                  ))}
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* DRAG HANDLE */}
-          <div onMouseDown={onDividerDown} style={s.dragHandle}>
-            <div style={s.dragLine}/><span style={s.dragDots}>⠿</span><div style={s.dragLine}/>
+          {/* ── DRAG DIVIDER ── */}
+          <div onMouseDown={onDivMouseDown} style={c.divider} title="Drag to resize">
+            <div style={c.dividerLine}/>
+            <div style={c.dividerGrip}>
+              {[0,1,2,3,4].map(i=><span key={i} style={c.dividerDot}/>)}
+            </div>
+            <div style={c.dividerLine}/>
           </div>
 
-          {/* STDIN pre-fill (only shown when input() detected) */}
-          {needsStdin && (
-            <div style={s.stdinWrap} className="anim-fade-in">
-              <span style={s.stdinLabel}>⌨ stdin</span>
-              <textarea
-                value={stdinLines}
-                onChange={e=>setStdinLines(e.target.value)}
-                placeholder="One input value per line (feeds into input() calls when you click Run)"
-                style={s.stdinArea}
+          {/* ── STDIN (shown when input() detected) ── */}
+          {showStdin && activeLang !== 'html' && (
+            <div style={c.stdinRow} className="anim-fade-in">
+              <span style={c.stdinLabel}>stdin</span>
+              <input
+                value={stdinVal}
+                onChange={e=>setStdinVal(e.target.value)}
+                onKeyDown={e=>e.key==='Enter'&&run()}
+                placeholder="Enter program input here (one value per line for multiple input() calls)"
+                style={c.stdinInput}
                 spellCheck={false}
               />
             </div>
           )}
 
-          {/* TERMINAL */}
-          <div style={s.terminal}>
-            <div style={s.termBar}>
-              <Dots/>
-              <span style={s.termTitle}>
-                Terminal
-                {outputType==='running' && <Badge bg="rgba(245,158,11,0.15)" c="#f59e0b">● running</Badge>}
-                {outputType==='success' && <Badge bg="rgba(78,201,176,0.15)" c="#4ec9b0">✓ exit 0</Badge>}
-                {outputType==='error'   && <Badge bg="rgba(248,113,113,0.15)" c="#f87171">✗ error</Badge>}
-                {outputType==='html'    && <Badge bg="rgba(129,140,248,0.15)" c="#818cf8">● preview</Badge>}
+          {/* ── TERMINAL PANE ── */}
+          <div style={{ ...c.termPane, height:`${100-splitPct-(showStdin?5:0)}%` }}>
+            <div style={c.paneBar}>
+              <TrafficLights/>
+              <span style={c.barFilename}>
+                Terminal {statusBadge()}
               </span>
-              {runTime!==null && outputType!=='running' && (
-                <span style={s.timeLabel}>{runTime<1000?`${runTime}ms`:`${(runTime/1000).toFixed(1)}s`}</span>
-              )}
-              {(output||htmlOutput) && <button onClick={clearOutput} style={s.clearBtn}>Clear</button>}
+              <div style={c.barRight}>
+                {runMs!==null&&status!=='running'&&(
+                  <span style={c.timeLabel}>{runMs<1000?`${runMs}ms`:`${(runMs/1000).toFixed(1)}s`}</span>
+                )}
+                {(output||htmlOut) && (
+                  <button onClick={clearOutput} style={c.clearBtn}>Clear</button>
+                )}
+              </div>
             </div>
 
-            <div ref={termBodyRef} style={s.termBody}>
-              {outputType==='html' && htmlOutput
-                ? <iframe srcDoc={htmlOutput} style={s.htmlFrame} title="Preview" sandbox="allow-scripts"/>
-                : outputType==='running'
-                ? <div style={s.runningRow}><div style={s.runSpinner}/><span style={{color:'#555',fontSize:13}}>Executing…</span></div>
-                : output
-                ? <pre style={{...s.outPre, color:outColor}}>{output}</pre>
-                : <div style={s.emptyTerm}>
-                    <span style={s.prompt}>$</span>
-                    <span style={s.emptyHint}>&nbsp;Press <Kbd>▶ Run</Kbd> or <Kbd>Ctrl+Enter</Kbd> to execute</span>
-                  </div>
-              }
+            <div ref={termRef} style={c.termBody}>
+              {status==='html' && htmlOut ? (
+                <iframe srcDoc={htmlOut} title="HTML preview" sandbox="allow-scripts"
+                  style={{width:'100%',height:'100%',border:'none',background:'#fff'}}/>
+              ) : status==='loading_py' ? (
+                <div style={c.termMsg}>
+                  <Spinner large/> Downloading Python runtime (~10 MB, once only)…
+                </div>
+              ) : status==='running' ? (
+                <div style={c.termMsg}>
+                  <Spinner large/> Executing…
+                </div>
+              ) : output ? (
+                <pre style={{...c.termOut, color:outColor}}>{output}</pre>
+              ) : (
+                <div style={c.termEmpty}>
+                  <span style={c.termPrompt}>$</span>
+                  <span style={c.termHint}>
+                    &nbsp;Press <Kbd>▶ Run</Kbd> or <Kbd>Ctrl+Enter</Kbd> to execute
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* ── RIGHT: AI panel ── */}
+        {/* ── AI PANEL ── */}
         {aiOpen && (
-          <div style={s.aiPanel} className="anim-fade-in">
-            <div style={s.aiHead}>
+          <div style={c.aiPanel} className="anim-fade-in">
+            <div style={c.aiHead}>
               <div>
-                <h3 style={s.aiTitle}>🤖 AI Analysis</h3>
-                <p style={s.aiSub}>{lang.icon} {lang.label}</p>
+                <div style={c.aiTitle}>🤖 AI Analysis</div>
+                <div style={c.aiSub}>{lang?.icon} {lang?.label}</div>
               </div>
-              <button onClick={()=>setAiOpen(false)} style={s.aiClose}>✕</button>
+              <button onClick={()=>setAiOpen(false)} style={c.aiClose}>✕</button>
             </div>
 
-            {/* AI Tabs: Explain | Better Code */}
-            {!aiLoading && aiResult && (
-              <div style={s.aiTabRow}>
-                {['explain','better'].map(t => (
+            {!aiLoading && aiData && (
+              <div style={c.aiTabs}>
+                {['explain','better'].map(t=>(
                   <button key={t} onClick={()=>setAiTab(t)}
-                    style={{ ...s.aiTabBtn, ...(aiTab===t ? s.aiTabActive : {}) }}>
-                    {t==='explain' ? '📖 Explain' : '✨ Better Code'}
+                    style={{...c.aiTabBtn,...(aiTab===t?c.aiTabActive:{})}}>
+                    {t==='explain'?'📖 Explain':'✨ Better Code'}
                   </button>
                 ))}
               </div>
             )}
 
             {aiLoading ? (
-              <div style={s.aiLoading}>
-                <div style={s.aiSpinner}/>
-                <p style={s.aiLoadTxt}>Analysing your code…</p>
-                <p style={s.aiLoadSub}>Syntax · Logic · Improvements · Better version</p>
+              <div style={c.aiLoader}>
+                <Spinner large/><p style={{color:'#858585',fontSize:13}}>Analysing…</p>
               </div>
-            ) : aiResult && (
-              <div style={s.aiBody}>
-                {aiTab === 'explain' ? (
+            ) : aiData && (
+              <div style={c.aiBody}>
+                {aiTab==='explain' ? (
                   <>
-                    <AiSection title="🎨 Syntax">
-                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                        {aiResult.syntax.map((item,i)=>(
-                          <div key={i} style={{...s.synCard,borderLeftColor:item.color}}>
-                            <code style={{...s.synToken,color:item.color}}>{item.token}</code>
-                            <p style={s.synDesc}>{item.desc}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </AiSection>
-                    <AiSection title="🧠 Logic">
-                      <p style={s.aiPara}>{aiResult.logic}</p>
-                    </AiSection>
-                    <AiSection title="✅ Strengths" color="#4ec9b0">
-                      <Blist items={aiResult.pros} dot="#4ec9b0" txt="#86efac"/>
-                    </AiSection>
-                    <AiSection title="⚠️ Weaknesses" color="#f87171">
-                      <Blist items={aiResult.cons} dot="#f87171" txt="#fca5a5"/>
-                    </AiSection>
-                    <AiSection title="💡 Suggestions">
-                      <p style={s.aiPara}>{aiResult.improvements}</p>
-                    </AiSection>
+                    <AISection label="🎨 Syntax">
+                      {aiData.syntax.map((s,i)=>(
+                        <div key={i} style={{...c.synCard,borderLeftColor:s.color}}>
+                          <code style={{...c.synToken,color:s.color}}>{s.token}</code>
+                          <p style={c.synDesc}>{s.desc}</p>
+                        </div>
+                      ))}
+                    </AISection>
+                    <AISection label="🧠 Logic"><p style={c.aiPara}>{aiData.logic}</p></AISection>
+                    <AISection label="✅ Strengths">
+                      <Bullets items={aiData.pros} color="#4EC9B0"/>
+                    </AISection>
+                    <AISection label="⚠️ Weaknesses">
+                      <Bullets items={aiData.cons} color="#F87171"/>
+                    </AISection>
+                    <AISection label="💡 Suggestions"><p style={c.aiPara}>{aiData.improvements}</p></AISection>
                   </>
                 ) : (
-                  <AiSection title="✨ Improved Version">
-                    <p style={{...s.aiPara,marginBottom:10}}>Here's a better version of your code with improvements applied:</p>
-                    <div style={s.betterCodeWrap}>
-                      <div style={s.betterCodeBar}>
-                        <span style={s.betterCodeLabel}>{lang.file}</span>
+                  <AISection label="✨ Improved Version">
+                    <p style={{...c.aiPara,marginBottom:8}}>Improvements applied — click to use:</p>
+                    <div style={c.betterWrap}>
+                      <div style={c.betterBar}>
+                        <span style={{fontSize:11,color:'#555',fontFamily:'JetBrains Mono,monospace'}}>{`main.${lang?.ext}`}</span>
                         <button
-                          onClick={() => { setCode(aiResult.betterCode.trim()); setAiOpen(false); }}
-                          style={s.useCodeBtn}>
+                          onClick={()=>{
+                            setCodes(prev=>({...prev,[activeLang]:aiData.betterCode.trim()}));
+                            setAiOpen(false);
+                          }}
+                          style={c.useBtn}>
                           ↗ Use This Code
                         </button>
                       </div>
-                      <pre style={s.betterCodePre}>{aiResult.betterCode.trim()}</pre>
+                      <pre style={c.betterPre}>{aiData.betterCode.trim()}</pre>
                     </div>
-                  </AiSection>
+                  </AISection>
                 )}
               </div>
             )}
@@ -853,115 +1013,188 @@ export default function CodeExperimentTab() {
   );
 }
 
-/* ─── Mini helpers ───────────────────────────────────────── */
-const Dots = () => (
-  <div style={{display:'flex',gap:6}}>
-    <span style={{width:12,height:12,borderRadius:'50%',background:'#ff5f57',display:'inline-block'}}/>
-    <span style={{width:12,height:12,borderRadius:'50%',background:'#febc2e',display:'inline-block'}}/>
-    <span style={{width:12,height:12,borderRadius:'50%',background:'#28c840',display:'inline-block'}}/>
+// ─── Tiny helpers ─────────────────────────────────────────
+const badge = (bg,color) => ({
+  fontSize:11, color, background:bg, padding:'2px 8px', borderRadius:10, marginLeft:6,
+});
+const TrafficLights = () => (
+  <div style={{display:'flex',gap:6,flexShrink:0}}>
+    {['#FF5F57','#FEBC2E','#28C840'].map((c,i)=>(
+      <span key={i} style={{width:12,height:12,borderRadius:'50%',background:c,display:'inline-block'}}/>
+    ))}
   </div>
 );
-const Badge = ({bg,c,children}) => <span style={{fontSize:11,color:c,background:bg,padding:'2px 8px',borderRadius:10,marginLeft:4}}>{children}</span>;
-const Kbd   = ({children}) => <kbd style={{background:'#3c3c3c',border:'1px solid #555',borderRadius:4,padding:'1px 6px',fontSize:11,fontFamily:'JetBrains Mono,monospace',color:'#858585'}}>{children}</kbd>;
-const AiSection = ({title,color='#555',children}) => (
+const Spinner = ({large}) => (
+  <span style={{
+    width:large?18:12, height:large?18:12, borderRadius:'50%',
+    border:`${large?3:2}px solid rgba(255,255,255,0.15)`, borderTopColor:'#4EC9B0',
+    animation:'spin 0.9s linear infinite', display:'inline-block', flexShrink:0,
+  }}/>
+);
+const Kbd = ({children}) => (
+  <kbd style={{background:'#3c3c3c',border:'1px solid #555',borderRadius:4,padding:'1px 6px',
+    fontSize:11,fontFamily:'JetBrains Mono,monospace',color:'#aaa'}}>{children}</kbd>
+);
+const AISection = ({label,children}) => (
   <div style={{display:'flex',flexDirection:'column',gap:8}}>
-    <div style={{fontSize:12,fontWeight:700,color,textTransform:'uppercase',letterSpacing:0.8}}>{title}</div>
+    <div style={{fontSize:11,fontWeight:700,color:'#666',textTransform:'uppercase',letterSpacing:0.8}}>{label}</div>
     {children}
   </div>
 );
-const Blist = ({items,dot,txt}) => (
-  <div style={{display:'flex',flexDirection:'column',gap:6}}>
-    {items.map((item,i) => (
-      <div key={i} style={{display:'flex',alignItems:'flex-start',gap:8}}>
-        <span style={{width:5,height:5,borderRadius:'50%',background:dot,marginTop:6,flexShrink:0}}/>
-        <span style={{fontSize:12,color:txt,lineHeight:1.65}}>{item}</span>
+const Bullets = ({items,color}) => (
+  <div style={{display:'flex',flexDirection:'column',gap:5}}>
+    {items.map((item,i)=>(
+      <div key={i} style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+        <span style={{width:5,height:5,borderRadius:'50%',background:color,marginTop:7,flexShrink:0}}/>
+        <span style={{fontSize:12,color:color==='#4EC9B0'?'#86efac':'#fca5a5',lineHeight:1.6}}>{item}</span>
       </div>
     ))}
   </div>
 );
 
-/* ═══════════════════════════════════════════════════════
-   STYLES — VS Code Dark
-═══════════════════════════════════════════════════════ */
-const s = {
-  root:        { display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden',background:'#1e1e1e',color:'#d4d4d4',fontFamily:'DM Sans,sans-serif' },
+// ─── Styles ───────────────────────────────────────────────
+const c = {
+  root:   { display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden',
+            background:'#1e1e1e', color:'#d4d4d4', fontFamily:'DM Sans,sans-serif' },
 
-  topBar:      { display:'flex',alignItems:'stretch',justifyContent:'space-between',height:44,background:'#323233',borderBottom:'1px solid #252526',flexShrink:0,paddingRight:12 },
-  langTabs:    { display:'flex',gap:0 },
-  langTab:     { display:'flex',alignItems:'center',gap:7,padding:'0 18px',height:44,fontSize:13,fontWeight:500,color:'#858585',background:'transparent',border:'none',borderBottom:'2px solid transparent',cursor:'pointer',transition:'all 0.18s',whiteSpace:'nowrap',fontFamily:'DM Sans,sans-serif' },
-  langIcon:    { fontSize:15 },
-  topRight:    { display:'flex',alignItems:'center',gap:8 },
-  shortcutHint:{ fontSize:11,color:'#3c3c3c',fontFamily:'JetBrains Mono,monospace',whiteSpace:'nowrap' },
-  aiBtn:       { display:'flex',alignItems:'center',gap:6,padding:'6px 14px',fontSize:13,fontWeight:600,background:'rgba(99,102,241,0.14)',border:'1px solid rgba(99,102,241,0.3)',color:'#818cf8',borderRadius:6,cursor:'pointer',transition:'all 0.2s',fontFamily:'DM Sans,sans-serif' },
-  runBtn:      { display:'flex',alignItems:'center',gap:6,padding:'7px 18px',fontSize:13,fontWeight:700,background:'linear-gradient(135deg,#10b981,#059669)',color:'#fff',border:'none',borderRadius:6,cursor:'pointer',transition:'all 0.2s',fontFamily:'DM Sans,sans-serif',boxShadow:'0 2px 8px rgba(16,185,129,0.3)' },
-  spinner:     { width:12,height:12,borderRadius:'50%',border:'2px solid rgba(255,255,255,0.3)',borderTopColor:'#fff',animation:'spin 0.8s linear infinite',display:'inline-block' },
+  // Top bar
+  topBar: { display:'flex', alignItems:'stretch', height:42, background:'#2d2d2d',
+            borderBottom:'1px solid #1a1a1a', flexShrink:0 },
+  tabs:   { display:'flex', flex:1, overflow:'hidden' },
+  tab:    { display:'flex', alignItems:'center', gap:7, padding:'0 20px', height:42,
+            fontSize:13, fontWeight:500, color:'#858585', background:'transparent',
+            border:'none', borderBottom:'2px solid transparent', cursor:'pointer',
+            transition:'all 0.15s', whiteSpace:'nowrap', fontFamily:'DM Sans,sans-serif',
+            flexShrink:0 },
+  tabIcon:{ fontSize:15 },
+  topRight:{ display:'flex', alignItems:'center', gap:8, padding:'0 12px', flexShrink:0 },
+  pyNote: { fontSize:11, color:'#6b7280', fontFamily:'JetBrains Mono,monospace', whiteSpace:'nowrap' },
+  kbHint: { fontSize:11, color:'#3a3a3a', fontFamily:'JetBrains Mono,monospace', whiteSpace:'nowrap' },
+  aiBtn:  { display:'flex', alignItems:'center', gap:6, padding:'6px 14px', fontSize:13,
+            fontWeight:600, background:'rgba(99,102,241,0.15)', border:'1px solid rgba(99,102,241,0.3)',
+            color:'#818cf8', borderRadius:6, cursor:'pointer', fontFamily:'DM Sans,sans-serif' },
+  runBtn: { display:'flex', alignItems:'center', gap:6, padding:'6px 18px', fontSize:13,
+            fontWeight:700, background:'linear-gradient(135deg,#10b981,#059669)', color:'#fff',
+            border:'none', borderRadius:6, cursor:'pointer', fontFamily:'DM Sans,sans-serif',
+            boxShadow:'0 2px 8px rgba(16,185,129,0.3)' },
 
-  mainLayout:  { display:'flex',flex:1,overflow:'hidden' },
-  leftCol:     { display:'flex',flexDirection:'column',flex:1,overflow:'hidden',minWidth:0 },
+  // Body layout
+  body:   { display:'flex', flex:1, overflow:'hidden' },
+  leftCol:{ display:'flex', flexDirection:'column', flex:1, overflow:'hidden', minWidth:0 },
 
-  editorWrap:  { background:'#1e1e1e',borderBottom:'1px solid #252526',flexShrink:0 },
-  editorBar:   { display:'flex',alignItems:'center',gap:10,padding:'7px 14px',background:'#252526',borderBottom:'1px solid #1e1e1e' },
-  filename:    { flex:1,textAlign:'center',fontSize:12,color:'#858585',fontFamily:'JetBrains Mono,monospace' },
-  langBadge:   { fontSize:11,color:'#555',fontFamily:'JetBrains Mono,monospace' },
+  // Pane bars
+  paneBar:{ display:'flex', alignItems:'center', gap:10, padding:'6px 14px',
+            background:'#2d2d2d', borderBottom:'1px solid #1a1a1a', flexShrink:0 },
+  barFilename:{ flex:1, textAlign:'center', fontSize:12, color:'#858585',
+               fontFamily:'JetBrains Mono,monospace', display:'flex', alignItems:'center',
+               justifyContent:'center', gap:0 },
+  barRight:{ display:'flex', alignItems:'center', gap:8, flexShrink:0 },
+  timeLabel:{ fontSize:11, color:'#444', fontFamily:'JetBrains Mono,monospace' },
+  clearBtn: { padding:'2px 10px', background:'#3c3c3c', border:'none', color:'#858585',
+              borderRadius:4, fontSize:11, cursor:'pointer', fontFamily:'DM Sans,sans-serif' },
 
-  // Highlight overlay
-  highlight:   { position:'absolute',top:0,left:0,right:0,pointerEvents:'none',overflow:'hidden',display:'flex' },
-  lineNums:    { display:'flex',flexDirection:'column',alignItems:'flex-end',padding:'14px 10px 14px 12px',background:'#1e1e1e',borderRight:'1px solid #2d2d2d',userSelect:'none',flexShrink:0,minWidth:44 },
-  lineNum:     { fontSize:13,lineHeight:'23.4px',color:'#3c3c3c',fontFamily:'JetBrains Mono,monospace',minWidth:20,textAlign:'right' },
-  highlightCode:{ flex:1,overflow:'hidden',padding:'14px 20px' },
-  highlightPre:{ margin:0,fontFamily:'JetBrains Mono,monospace',fontSize:13,lineHeight:1.8,whiteSpace:'pre',color:'transparent' },
+  // Editor pane
+  editorPane: { display:'flex', flexDirection:'column', overflow:'hidden', flexShrink:0,
+                background:'#1e1e1e', borderBottom:'1px solid #1a1a1a' },
+  editorArea: { display:'flex', flex:1, overflow:'hidden', position:'relative' },
 
-  editor:      { position:'absolute',top:0,left:0,right:0,bottom:0,width:'100%',paddingLeft:54,paddingRight:20,paddingTop:14,paddingBottom:14,background:'transparent',border:'none',outline:'none',color:'transparent',caretColor:'#d4d4d4',fontFamily:'JetBrains Mono,monospace',fontSize:13,lineHeight:1.8,resize:'none',overflowY:'auto' },
+  // Line numbers
+  lineNums:   { display:'flex', flexDirection:'column', alignItems:'flex-end',
+                padding:'14px 10px 14px 12px', background:'#1e1e1e',
+                borderRight:'1px solid #2a2a2a', userSelect:'none',
+                overflowY:'hidden', flexShrink:0, minWidth:46 },
+  lineNum:    { fontSize:13, lineHeight:'23.4px', color:'#3a3a3a',
+               fontFamily:'JetBrains Mono,monospace', minWidth:24, textAlign:'right' },
 
-  autocomplete:{ position:'absolute',zIndex:1000,background:'#252526',border:'1px solid #454545',borderRadius:6,boxShadow:'0 8px 32px rgba(0,0,0,0.5)',minWidth:220,maxHeight:200,overflowY:'auto',top:'calc(100% - 4px)',left:54 },
-  acItem:      { display:'flex',alignItems:'center',gap:8,padding:'7px 10px',cursor:'pointer',fontSize:13,fontFamily:'JetBrains Mono,monospace' },
-  acItemActive:{ background:'#094771' },
-  acType:      { fontSize:10,flexShrink:0 },
-  acLabel:     { flex:1,color:'#d4d4d4' },
-  acSnip:      { fontSize:10,color:'#555',background:'#3c3c3c',padding:'1px 6px',borderRadius:4 },
+  // Editor inner
+  editorInner:{ flex:1, position:'relative', overflow:'hidden' },
+  overlay:    { position:'absolute', inset:0, overflow:'auto', pointerEvents:'none',
+               padding:'14px 16px', zIndex:1 },
+  overlayPre: { margin:0, fontFamily:'JetBrains Mono,monospace', fontSize:13,
+               lineHeight:'23.4px', whiteSpace:'pre', color:'transparent',
+               minHeight:'100%' },
+  textarea:   { position:'absolute', inset:0, width:'100%', height:'100%',
+               background:'transparent', border:'none', outline:'none',
+               color:'transparent', caretColor:'#d4d4d4',
+               fontFamily:'JetBrains Mono,monospace', fontSize:13, lineHeight:'23.4px',
+               padding:'14px 16px', resize:'none', zIndex:2, overflowY:'auto',
+               overflowX:'auto', whiteSpace:'pre' },
 
-  dragHandle:  { display:'flex',alignItems:'center',gap:8,padding:'3px 16px',background:'#252526',borderTop:'1px solid #1a1a1a',borderBottom:'1px solid #1a1a1a',cursor:'row-resize',flexShrink:0,userSelect:'none' },
-  dragLine:    { flex:1,height:1,background:'#3c3c3c' },
-  dragDots:    { fontSize:11,color:'#444',letterSpacing:1 },
+  // Autocomplete
+  sugBox:   { position:'absolute', zIndex:100, background:'#252526',
+              border:'1px solid #454545', borderRadius:6,
+              boxShadow:'0 8px 32px rgba(0,0,0,0.6)', minWidth:260, maxWidth:380,
+              maxHeight:220, overflowY:'auto' },
+  sugItem:  { display:'flex', alignItems:'center', gap:8, padding:'5px 10px',
+              cursor:'pointer', fontSize:13, fontFamily:'JetBrains Mono,monospace',
+              borderBottom:'1px solid #2d2d2d' },
+  sugItemActive:{ background:'#094771' },
+  sugKind:  { fontSize:11, width:14, flexShrink:0, textAlign:'center' },
+  sugLabel: { flex:1, color:'#d4d4d4', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' },
+  sugDetail:{ fontSize:11, color:'#555', flexShrink:0 },
+  sugFooter:{ display:'flex', justifyContent:'space-between', padding:'4px 10px',
+              background:'#1e1e1e', fontSize:10, color:'#444',
+              borderTop:'1px solid #2d2d2d', fontFamily:'DM Sans,sans-serif' },
 
-  stdinWrap:   { background:'#1a1a1a',borderBottom:'1px solid #1e1e1e',display:'flex',alignItems:'center',gap:10,padding:'6px 14px',flexShrink:0 },
-  stdinLabel:  { fontSize:11,color:'#f59e0b',fontFamily:'JetBrains Mono,monospace',fontWeight:700,flexShrink:0 },
-  stdinArea:   { flex:1,height:28,background:'transparent',border:'none',outline:'none',color:'#f59e0b',fontFamily:'JetBrains Mono,monospace',fontSize:12,resize:'none',lineHeight:1.4 },
+  // Divider
+  divider:    { display:'flex', alignItems:'center', gap:6, padding:'3px 14px',
+               background:'#252526', cursor:'row-resize', flexShrink:0,
+               userSelect:'none', borderTop:'1px solid #1a1a1a', borderBottom:'1px solid #1a1a1a' },
+  dividerLine:{ flex:1, height:1, background:'#333' },
+  dividerGrip:{ display:'flex', gap:3 },
+  dividerDot: { width:3, height:3, borderRadius:'50%', background:'#555', display:'inline-block' },
 
-  terminal:    { display:'flex',flexDirection:'column',flex:1,background:'#1e1e1e',overflow:'hidden' },
-  termBar:     { display:'flex',alignItems:'center',gap:8,padding:'7px 14px',background:'#252526',borderTop:'1px solid #1a1a1a',flexShrink:0 },
-  termTitle:   { flex:1,fontSize:12,fontWeight:600,color:'#858585',fontFamily:'Syne,sans-serif',display:'flex',alignItems:'center',gap:4 },
-  timeLabel:   { fontSize:11,color:'#3c3c3c',fontFamily:'JetBrains Mono,monospace' },
-  clearBtn:    { padding:'3px 10px',background:'#3c3c3c',border:'none',color:'#858585',borderRadius:4,fontSize:11,cursor:'pointer',fontFamily:'DM Sans,sans-serif' },
-  termBody:    { flex:1,overflow:'auto',position:'relative' },
-  outPre:      { margin:0,padding:'14px 20px',fontFamily:'JetBrains Mono,monospace',fontSize:13,lineHeight:1.8,whiteSpace:'pre-wrap',wordBreak:'break-all' },
-  htmlFrame:   { width:'100%',height:'100%',border:'none',background:'#fff' },
-  runningRow:  { display:'flex',alignItems:'center',gap:12,padding:'20px' },
-  runSpinner:  { width:16,height:16,borderRadius:'50%',border:'2px solid rgba(78,201,176,0.2)',borderTopColor:'#4ec9b0',animation:'spin 1s linear infinite',flexShrink:0 },
-  emptyTerm:   { display:'flex',alignItems:'center',padding:'14px 20px' },
-  prompt:      { color:'#4ec9b0',fontFamily:'JetBrains Mono,monospace',fontSize:14,fontWeight:700 },
-  emptyHint:   { color:'#3c3c3c',fontSize:13 },
+  // Stdin
+  stdinRow:   { display:'flex', alignItems:'center', gap:10, padding:'5px 14px',
+               background:'#1a1a1a', borderBottom:'1px solid #111', flexShrink:0 },
+  stdinLabel: { fontSize:11, fontWeight:700, color:'#f59e0b',
+               fontFamily:'JetBrains Mono,monospace', flexShrink:0 },
+  stdinInput: { flex:1, background:'transparent', border:'none', outline:'none',
+               color:'#f59e0b', fontFamily:'JetBrains Mono,monospace', fontSize:12,
+               padding:'2px 0' },
 
-  aiPanel:     { width:360,borderLeft:'1px solid #252526',background:'#1e1e1e',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0 },
-  aiHead:      { display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'14px 16px',borderBottom:'1px solid #252526',flexShrink:0 },
-  aiTitle:     { fontFamily:'Syne,sans-serif',fontSize:15,fontWeight:800,color:'#d4d4d4',marginBottom:2 },
-  aiSub:       { fontSize:11,color:'#555',fontFamily:'JetBrains Mono,monospace' },
-  aiClose:     { width:24,height:24,borderRadius:4,background:'#3c3c3c',border:'none',color:'#858585',fontSize:13,cursor:'pointer',fontFamily:'DM Sans,sans-serif',flexShrink:0 },
-  aiTabRow:    { display:'flex',borderBottom:'1px solid #252526',flexShrink:0 },
-  aiTabBtn:    { flex:1,padding:'9px 0',fontSize:12,fontWeight:600,color:'#555',background:'transparent',border:'none',borderBottom:'2px solid transparent',cursor:'pointer',fontFamily:'DM Sans,sans-serif',transition:'all 0.2s' },
-  aiTabActive: { color:'#818cf8',borderBottomColor:'#6366f1',background:'rgba(99,102,241,0.06)' },
-  aiLoading:   { display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,flex:1,padding:'32px 18px' },
-  aiSpinner:   { width:32,height:32,borderRadius:'50%',border:'3px solid rgba(99,102,241,0.2)',borderTopColor:'#6366f1',animation:'spin 1s linear infinite' },
-  aiLoadTxt:   { fontSize:13,color:'#858585',fontWeight:500,textAlign:'center' },
-  aiLoadSub:   { fontSize:11,color:'#4d4d4d',textAlign:'center',lineHeight:1.6 },
-  aiBody:      { flex:1,overflowY:'auto',padding:'14px 16px',display:'flex',flexDirection:'column',gap:16 },
-  aiPara:      { fontSize:12,color:'#858585',lineHeight:1.75,background:'#252526',padding:'10px 12px',borderRadius:6,margin:0 },
-  synCard:     { padding:'9px 11px',background:'#252526',borderRadius:6,borderLeft:'3px solid',display:'flex',flexDirection:'column',gap:4 },
-  synToken:    { fontFamily:'JetBrains Mono,monospace',fontSize:11,fontWeight:600 },
-  synDesc:     { fontSize:12,color:'#858585',lineHeight:1.6,margin:0 },
-  betterCodeWrap:{ background:'#1a1a1a',borderRadius:8,overflow:'hidden',border:'1px solid #2d2d2d' },
-  betterCodeBar: { display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:'#252526',borderBottom:'1px solid #1e1e1e' },
-  betterCodeLabel:{ fontSize:11,color:'#555',fontFamily:'JetBrains Mono,monospace' },
-  useCodeBtn:  { padding:'4px 12px',background:'rgba(99,102,241,0.2)',border:'1px solid rgba(99,102,241,0.4)',color:'#818cf8',borderRadius:5,fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'DM Sans,sans-serif' },
-  betterCodePre:{ margin:0,padding:'14px',fontFamily:'JetBrains Mono,monospace',fontSize:11.5,lineHeight:1.75,color:'#a5b4fc',overflowX:'auto',whiteSpace:'pre' },
+  // Terminal pane
+  termPane:   { display:'flex', flexDirection:'column', flex:1, background:'#1e1e1e',
+               overflow:'hidden', minHeight:0 },
+  termBody:   { flex:1, overflow:'auto', position:'relative' },
+  termOut:    { margin:0, padding:'14px 20px', fontFamily:'JetBrains Mono,monospace',
+               fontSize:13, lineHeight:1.8, whiteSpace:'pre-wrap', wordBreak:'break-all' },
+  termMsg:    { display:'flex', alignItems:'center', gap:12, padding:'18px 20px',
+               color:'#555', fontSize:13, fontFamily:'JetBrains Mono,monospace' },
+  termEmpty:  { display:'flex', alignItems:'center', padding:'14px 20px' },
+  termPrompt: { color:'#4EC9B0', fontFamily:'JetBrains Mono,monospace', fontSize:14, fontWeight:700 },
+  termHint:   { color:'#333', fontSize:13 },
+
+  // AI panel
+  aiPanel:{ width:360, borderLeft:'1px solid #1a1a1a', background:'#1e1e1e',
+            display:'flex', flexDirection:'column', overflow:'hidden', flexShrink:0 },
+  aiHead: { display:'flex', alignItems:'flex-start', justifyContent:'space-between',
+            padding:'14px 16px', borderBottom:'1px solid #252526', flexShrink:0 },
+  aiTitle:{ fontFamily:'Syne,sans-serif', fontSize:15, fontWeight:800, color:'#d4d4d4', marginBottom:2 },
+  aiSub:  { fontSize:11, color:'#555', fontFamily:'JetBrains Mono,monospace' },
+  aiClose:{ width:24, height:24, borderRadius:4, background:'#3c3c3c', border:'none',
+            color:'#858585', fontSize:13, cursor:'pointer', fontFamily:'DM Sans,sans-serif', flexShrink:0 },
+  aiTabs: { display:'flex', borderBottom:'1px solid #252526', flexShrink:0 },
+  aiTabBtn:{ flex:1, padding:'8px 0', fontSize:12, fontWeight:600, color:'#555',
+             background:'transparent', border:'none', borderBottom:'2px solid transparent',
+             cursor:'pointer', fontFamily:'DM Sans,sans-serif', transition:'all 0.15s' },
+  aiTabActive:{ color:'#818cf8', borderBottomColor:'#6366f1', background:'rgba(99,102,241,0.06)' },
+  aiLoader:{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+             gap:12, flex:1 },
+  aiBody: { flex:1, overflowY:'auto', padding:'14px 16px', display:'flex',
+            flexDirection:'column', gap:16 },
+  aiPara: { fontSize:12, color:'#858585', lineHeight:1.75, background:'#252526',
+            padding:'10px 12px', borderRadius:6, margin:0 },
+  synCard:{ padding:'9px 11px', background:'#252526', borderRadius:6, borderLeft:'3px solid',
+            display:'flex', flexDirection:'column', gap:4 },
+  synToken:{ fontFamily:'JetBrains Mono,monospace', fontSize:11, fontWeight:600 },
+  synDesc: { fontSize:12, color:'#858585', lineHeight:1.6, margin:0 },
+  betterWrap:{ background:'#141414', borderRadius:6, overflow:'hidden', border:'1px solid #2d2d2d' },
+  betterBar: { display:'flex', alignItems:'center', justifyContent:'space-between',
+               padding:'7px 12px', background:'#252526', borderBottom:'1px solid #1a1a1a' },
+  useBtn: { padding:'4px 12px', background:'rgba(99,102,241,0.2)', border:'1px solid rgba(99,102,241,0.4)',
+            color:'#818cf8', borderRadius:5, fontSize:11, fontWeight:600, cursor:'pointer',
+            fontFamily:'DM Sans,sans-serif' },
+  betterPre:{ margin:0, padding:'12px', fontFamily:'JetBrains Mono,monospace', fontSize:11.5,
+              lineHeight:1.75, color:'#a5b4fc', overflowX:'auto', whiteSpace:'pre' },
 };
